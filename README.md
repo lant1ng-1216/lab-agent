@@ -43,7 +43,7 @@
 
 Default UI is **light (白昼)**; you can switch dark mode or Glass skin in-app.
 
-Configure a model API key after open (DeepSeek Anthropic-compatible path is the default — see Configuration).
+Configure a model API key after open (DeepSeek by default — see Configuration).
 
 ### Terminal (Lab Code only)
 
@@ -81,11 +81,11 @@ Inspired by how projects like [OpenCode](https://github.com/anomalyco/opencode) 
 
 Copy [`agents/lab-coding/lab-agent.env.example`](./agents/lab-coding/lab-agent.env.example) to `lab-agent.env` (never commit the real file) and set:
 
-- `ANTHROPIC_AUTH_TOKEN` — API key (e.g. DeepSeek)
-- `ANTHROPIC_BASE_URL` — e.g. `https://api.deepseek.com/anthropic`
+- `ANTHROPIC_AUTH_TOKEN` — your **DeepSeek** or **OpenAI** API key
+- `ANTHROPIC_BASE_URL` — DeepSeek: `https://api.deepseek.com/anthropic` · OpenAI: `https://api.openai.com`
 - model vars as needed (defaults lean on DeepSeek Flash)
 
-The desktop app can also take a key from its settings UI.
+The desktop app can also take a key from its settings UI (DeepSeek / OpenAI presets).
 
 ---
 
