@@ -42,6 +42,18 @@ declare global {
         setMode?: string;
       }) => Promise<boolean>;
       getLabEnv: () => Promise<{ ok: boolean; apiKey: string; baseUrl: string; model: string }>;
+      getInstallStatus: () => Promise<{
+        packaged: boolean;
+        platform: string;
+        needsInstall: boolean;
+        needsDesktopShortcut: boolean;
+        currentAppPath: string;
+        targetAppPath: string;
+        desktopShortcutPath: string;
+        hint: string;
+      }>;
+      installToStable: () => Promise<{ ok: boolean; error?: string; relaunchPath?: string }>;
+      ensureDesktopShortcut: () => Promise<{ ok: boolean; error?: string }>;
       onAgentEvent: (cb: (sessionKey: string, event: AgentBridgeEvent) => void) => () => void;
       sendChat: (agent: "supervisor" | "coding", text: string) => Promise<void>;
       getMirrorSnapshot: () => Promise<CodingMirrorEvent[]>;

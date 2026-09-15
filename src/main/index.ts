@@ -9,6 +9,12 @@ import { DeepSeekProvider } from '../agent/providers/deepseek';
 import { SupervisorLoop } from '../agent/loops/supervisor-loop';
 import { CodingLoop } from '../agent/loops/coding-loop';
 import { LabCodingBridge } from './labCodingBridge';
+import {
+  ensureDesktopShortcut,
+  getInstallStatus,
+  installToStableLocation,
+  relaunchFrom,
+} from './macInstall';
 
 // node-pty is CJS; load lazily so a missing native build doesn't crash the app
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -311,6 +317,18 @@ function registerIpc() {
       baseUrl: settings.apiBaseUrl || 'https://api.deepseek.com',
       model: settings.model || 'deepseek-flash',
     };
+  });
+
+  ipcMain.handle(IPC.GET_INSTALL_STATUS, () => getInstallStatus(app));
+
+  ipcMain.handle(IPC.ENSURE_DESKTOP_SHORTCUT, () => ensureDesktopShortcut(app));
+
+  ipcMain.handle(IPC.INSTALL_TO_STABLE, () => {
+    const result = installToStableLocation(app);
+    if (result.ok && result.relaunchPath) {
+      setTimeout(() => relaunchFrom(app, result.relaunchPath!), 400);
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.SET_API_KEY, (_e, key: string) => {

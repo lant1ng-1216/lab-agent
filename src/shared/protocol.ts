@@ -121,7 +121,22 @@ export const IPC = {
   AGENT_PERMISSION: 'lab:agent-permission',
   /** Bootstrap shell API from agents/lab-coding/lab-agent.env */
   GET_LAB_ENV: 'lab:get-lab-env',
+  /** First-run: install location + Desktop shortcut */
+  GET_INSTALL_STATUS: 'lab:get-install-status',
+  INSTALL_TO_STABLE: 'lab:install-to-stable',
+  ENSURE_DESKTOP_SHORTCUT: 'lab:ensure-desktop-shortcut',
 } as const;
+
+export type InstallStatusPayload = {
+  packaged: boolean;
+  platform: string;
+  needsInstall: boolean;
+  needsDesktopShortcut: boolean;
+  currentAppPath: string;
+  targetAppPath: string;
+  desktopShortcutPath: string;
+  hint: string;
+};
 
 export interface ListModelsRequest {
   baseUrl: string;
