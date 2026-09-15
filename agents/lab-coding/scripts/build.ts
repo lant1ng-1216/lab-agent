@@ -10,6 +10,16 @@ const args = process.argv.slice(2)
 const compile = args.includes('--compile')
 const dev = args.includes('--dev')
 
+/** Optional Bun compile target, e.g. bun-darwin-arm64 / bun-windows-x64 / bun-linux-x64 */
+function readBunTarget(): string {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (arg === '--bun-target' && args[i + 1]) return args[i + 1]!
+    if (arg.startsWith('--bun-target=')) return arg.slice('--bun-target='.length)
+  }
+  return 'bun'
+}
+
 const fullExperimentalFeatures = [
   'AGENT_MEMORY_SNAPSHOT',
   'AGENT_TRIGGERS',
@@ -158,19 +168,21 @@ const defines = {
   ),
 } as const
 
+const bunTarget = readBunTarget()
 const cmd = [
   'bun',
   'build',
   './src/entrypoints/cli.tsx',
   '--compile',
   '--target',
-  'bun',
+  bunTarget,
   '--format',
   'esm',
   '--outfile',
   outfile,
   '--minify',
-  '--bytecode',
+  // bytecode is host-oriented; skip for cross-compile targets
+  ...(bunTarget === 'bun' ? ['--bytecode'] : []),
   '--packages',
   'bundle',
   '--conditions',

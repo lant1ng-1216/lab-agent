@@ -2,14 +2,99 @@
   "name": "lab-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Lab Agent — dual-window desktop supervisor + coding agent",
+  "description": "Lab Agent — open-source coding agent (Lab Code engine + desktop shell)",
+  "author": "Lab Agent",
+  "homepage": "https://github.com/lant1ng-1216/lab-agent",
+  "license": "Apache-2.0",
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "desktop": "node scripts/dev.mjs desktop",
     "build": "tsc -p tsconfig.json && node scripts/copy-lab-coding.mjs && vite build",
+    "prepare:engines": "node scripts/prepare-engines.mjs",
+    "dist": "node scripts/dist.mjs",
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "build": {
+    "appId": "online.labagent.app",
+    "productName": "Lab Agent",
+    "copyright": "Copyright © Lab Agent contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "packaging/engine/darwin-arm64",
+          "to": "lab-coding"
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "dmg": {
+      "artifactName": "Lab-Agent-${version}-mac-${arch}.${ext}"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "packaging/engine/win32-x64",
+          "to": "lab-coding"
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Lab-Agent-${version}-win-${arch}-setup.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "target": [
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "packaging/engine/linux-x64",
+          "to": "lab-coding"
+        }
+      ],
+      "artifactName": "Lab-Agent-${version}-linux-${arch}.${ext}"
+    },
+    "artifactName": "Lab-Agent-${version}-${os}-${arch}.${ext}"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
@@ -19,6 +104,8 @@
     "@types/three": "^0.175.0",
     "@vitejs/plugin-react": "^4.5.2",
     "electron": "^35.0.1",
+    "electron-builder": "^26.15.3",
+    "png2icons": "^2.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.8.2",
     "vite": "^6.2.2",

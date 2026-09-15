@@ -96,18 +96,29 @@ type SessionState = {
   lastAssistantUuid?: string
 }
 
+function engineBinaryName(): string {
+  return process.platform === 'win32' ? 'cli-dev.exe' : 'cli-dev'
+}
+
 function resolveLabCodingRoot(): string {
   const candidates = [
+    // Packaged desktop: electron-builder extraResources
+    typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'lab-coding') : '',
     path.resolve(__dirname, '../../../agents/lab-coding'),
     path.resolve(process.cwd(), 'agents/lab-coding'),
     path.resolve(__dirname, '../../agents/lab-coding'),
-  ]
+  ].filter(Boolean)
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, 'cli-dev')) || fs.existsSync(path.join(c, 'start-lab-agent.command'))) {
+    const bin = path.join(c, engineBinaryName())
+    if (
+      fs.existsSync(bin) ||
+      fs.existsSync(path.join(c, 'cli-dev')) ||
+      fs.existsSync(path.join(c, 'start-lab-agent.command'))
+    ) {
       return c
     }
   }
-  return candidates[0]
+  return candidates[0] || path.resolve(process.cwd(), 'agents/lab-coding')
 }
 
 function loadEnvFile(filePath: string): Record<string, string> {
@@ -1010,11 +1021,16 @@ export class LabCodingBridge {
   }
 
   async prompt(req: PromptRequest): Promise<void> {
-    const bin = path.join(this.root, 'cli-dev')
-    if (!fs.existsSync(bin)) {
+    const binCandidates = [
+      path.join(this.root, process.platform === 'win32' ? 'cli-dev.exe' : 'cli-dev'),
+      path.join(this.root, 'cli-dev'),
+      path.join(this.root, 'cli-dev.exe'),
+    ]
+    const bin = binCandidates.find((p) => fs.existsSync(p))
+    if (!bin) {
       this.emit(req.sessionKey, {
         kind: 'error',
-        text: `找不到 Lab Coding 引擎：${bin}（请先在 agents/lab-coding 执行 bun run build:dev）`,
+        text: `找不到 Lab Coding 引擎：${binCandidates[0]}（开发：在 agents/lab-coding 执行 bun run build:dev；安装包：应随应用附带引擎）`,
       })
       return
     }

@@ -27,6 +27,12 @@ const { app, BrowserWindow, ipcMain, dialog, screen, nativeImage } = electron;
 
 const isDev = !app.isPackaged;
 
+try {
+  app.setName('Lab Agent');
+} catch {
+  /* ignore */
+}
+
 /** App icon: prefer PNG for dock.setIcon reliability in Electron-dev */
 function resolveAppIcon(): string | undefined {
   const roots = [
@@ -138,12 +144,18 @@ let settings: AppSettings = {
 
 function resolveLabCodingRoot(): string {
   const candidates = [
+    path.join(process.resourcesPath, 'lab-coding'),
     path.resolve(__dirname, '../../agents/lab-coding'),
     path.resolve(process.cwd(), 'agents/lab-coding'),
     path.join(app.getAppPath(), 'agents/lab-coding'),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, 'lab-agent.env')) || fs.existsSync(path.join(c, 'cli-dev'))) {
+    if (
+      fs.existsSync(path.join(c, 'lab-agent.env')) ||
+      fs.existsSync(path.join(c, 'cli-dev')) ||
+      fs.existsSync(path.join(c, 'cli-dev.exe')) ||
+      fs.existsSync(path.join(c, 'lab-agent.env.example'))
+    ) {
       return c;
     }
   }

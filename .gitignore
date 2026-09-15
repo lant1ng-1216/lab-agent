@@ -13,6 +13,7 @@ dist/
 # Desktop packaging artifacts
 release/
 out/
+packaging/engine/
 
 # Icon work backups
 build/*.bak-*
@@ -35,3 +36,7 @@ agents/lab-coding/openclaw/
 .vscode/
 *.swp
 .cursor/
+
+# Icon intermediates
+build/icon.iconset/
+build/*.bak-*
