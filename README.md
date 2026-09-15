@@ -20,14 +20,14 @@ Download the latest build from [Releases](https://github.com/lant1ng-1216/lab-ag
 
 #### macOS（重要）
 
-构建为 **ad-hoc 深签**，**尚未** Apple 公证。其他用户按下面做即可（与本机相同）：
+构建为 **ad-hoc 深签**，**尚未** Apple 公证。用法：
 
-1. 解压 zip，将 `Lab Agent.app` **拖到「应用程序」**（不要从「下载」里直接双击常开——会触发 App Translocation，工具/会话目录会变成只读）
-2. 从「应用程序」打开。若弹出「无法验证 / 未打开」→ **完成** → **系统设置 → 隐私与安全性 → 仍要打开**（只点一次）
-3. 也可解压后双击附带的 `mac-first-open.command`（清隔离并启动）
-4. 终端备选：`xattr -cr "/Applications/Lab Agent.app" && open "/Applications/Lab Agent.app"`
+1. 下载 zip → 解压 → 双击 `Lab Agent.app`
+2. 若弹出「无法验证」→ **系统设置 → 隐私与安全性 → 仍要打开**（只需一次）
+3. 首次访问工作区文件夹时，若系统询问权限 → 点 **允许**
 
-> 程序坞图标若仍指向「下载」里的副本，请删掉坞里旧图标，再从「应用程序」拖一次。  
+不必拖到「应用程序」。填入 API Key 后即可对话与使用工具。
+
 > Windows：解压后运行 `Lab Agent.exe`（偶发 SmartScreen 选仍要运行即可）。  
 > Linux：解压后运行包内可执行文件。
 
