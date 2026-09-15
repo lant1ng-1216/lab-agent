@@ -25,6 +25,7 @@ import { addUsageToTotals } from "./lib/tokenUsage";
 import {
   applyAppearanceToDocument,
   loadAppearance,
+  resetAppearanceToDefaults,
   saveAppearance,
   type AppearanceState,
   type ColorMode,
@@ -41,13 +42,16 @@ import {
   type ShellMode,
 } from "./lib/sessionStores";
 import {
+  API_PROVIDER_PRESETS,
   CHAT_MODEL_KEY,
   detectProvider,
   loadChatModelKey,
   loadCustomApi,
   mapModelsResponse,
+  presetForBaseUrl,
   prettifyModelId,
   saveCustomApi,
+  type ApiProviderPresetId,
   type CustomApiConfig,
 } from "./lib/chatModels";
 import {
@@ -181,6 +185,9 @@ export default function App() {
   const [customApiOpen, setCustomApiOpen] = useState(false);
   const [customApi, setCustomApi] = useState<CustomApiConfig>(() => loadCustomApi());
   const [customApiDraft, setCustomApiDraft] = useState<CustomApiConfig>(() => loadCustomApi());
+  const [apiPreset, setApiPreset] = useState<ApiProviderPresetId>(() =>
+    presetForBaseUrl(loadCustomApi().baseUrl),
+  );
   const [fetchingModels, setFetchingModels] = useState(false);
 
   const initialMode = useRef(loadShellMode());
@@ -1389,6 +1396,7 @@ export default function App() {
                   customApi={customApi}
                   onRequestCustomApi={() => {
                     setCustomApiDraft(customApi);
+                    setApiPreset(presetForBaseUrl(customApi.baseUrl));
                     setCustomApiOpen(true);
                   }}
                   busy={isNormal && dockBusy}
@@ -1797,8 +1805,21 @@ export default function App() {
               </div>
 
               <div className="mb-5">
-                <div className="mb-2 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
-                  外观
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
+                    外观
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-md px-2 py-0.5 text-[11px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+                    onClick={() => {
+                      const next = resetAppearanceToDefaults();
+                      setAppearance(next);
+                      showToast("已恢复默认外观（默认皮肤 · 白昼）");
+                    }}
+                  >
+                    恢复默认
+                  </button>
                 </div>
                 <AppearancePickCards appearance={appearance} onChange={setAppearance} />
                 <p className="mt-1 text-[11px] leading-relaxed text-[var(--lab-ink-3)]">
@@ -1837,6 +1858,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setCustomApiDraft(customApi);
+                          setApiPreset(presetForBaseUrl(customApi.baseUrl));
                           setCustomApiOpen(true);
                           setSettingsOpen(false);
                         }}
@@ -1915,17 +1937,70 @@ export default function App() {
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[15px] font-semibold text-[var(--lab-ink)]">添加 API</div>
-                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">保存后拉取该账号真实可用模型（如 DeepSeek /models）</div>
+                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">选择厂商后只需填写 API Key，保存后拉取可用模型</div>
                 </div>
                 <button type="button" className="rounded-md px-2 py-1 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]" onClick={() => !fetchingModels && setCustomApiOpen(false)} disabled={fetchingModels}>×</button>
               </div>
-              <div className="mb-2 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">Base URL</div>
-              <input
-                value={customApiDraft.baseUrl}
-                onChange={(e) => setCustomApiDraft((d) => ({ ...d, baseUrl: e.target.value, provider: detectProvider(e.target.value) }))}
-                placeholder="https://api.deepseek.com"
-                className="mb-3 w-full rounded-lg border border-[var(--lab-border)] bg-[var(--lab-inset)] px-2.5 py-2 text-[12px] text-[var(--lab-ink)] outline-none"
-              />
+
+              <div className="mb-2 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">厂商</div>
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {API_PROVIDER_PRESETS.map((p) => {
+                  const selected = apiPreset === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={fetchingModels}
+                      onClick={() => {
+                        setApiPreset(p.id);
+                        setCustomApiDraft((d) => ({
+                          ...d,
+                          baseUrl: p.id === "custom" ? d.baseUrl : p.baseUrl,
+                          provider: p.id === "custom" ? detectProvider(d.baseUrl || p.baseUrl) : p.provider,
+                        }));
+                      }}
+                      className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${
+                        selected
+                          ? "border-[var(--lab-ink)]/40 bg-[var(--lab-hover)] font-medium text-[var(--lab-ink)]"
+                          : "border-[var(--lab-border-soft)] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)]"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {apiPreset === "custom" ? (
+                <>
+                  <div className="mb-2 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">Base URL</div>
+                  <input
+                    value={customApiDraft.baseUrl}
+                    onChange={(e) =>
+                      setCustomApiDraft((d) => ({
+                        ...d,
+                        baseUrl: e.target.value,
+                        provider: detectProvider(e.target.value),
+                      }))
+                    }
+                    placeholder="https://…"
+                    className="mb-3 w-full rounded-lg border border-[var(--lab-border)] bg-[var(--lab-inset)] px-2.5 py-2 text-[12px] text-[var(--lab-ink)] outline-none"
+                  />
+                </>
+              ) : (
+                <div className="mb-3 rounded-lg border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] px-2.5 py-2">
+                  <div className="text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">Base URL</div>
+                  <div className="mt-0.5 truncate font-[var(--lab-mono)] text-[11.5px] text-[var(--lab-ink-2)]">
+                    {customApiDraft.baseUrl || "—"}
+                  </div>
+                  {API_PROVIDER_PRESETS.find((p) => p.id === apiPreset)?.hint ? (
+                    <div className="mt-1 text-[10.5px] text-[var(--lab-ink-3)]">
+                      {API_PROVIDER_PRESETS.find((p) => p.id === apiPreset)?.hint}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
               <div className="mb-2 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">API Key</div>
               <input
                 type="password"
@@ -1933,6 +2008,7 @@ export default function App() {
                 onChange={(e) => setCustomApiDraft((d) => ({ ...d, apiKey: e.target.value }))}
                 placeholder="sk-…"
                 className="mb-3 w-full rounded-lg border border-[var(--lab-border)] bg-[var(--lab-inset)] px-2.5 py-2 text-[12px] text-[var(--lab-ink)] outline-none"
+                autoFocus
               />
               {customApi.models.length > 0 ? (
                 <div className="mb-4 max-h-32 space-y-1 overflow-y-auto rounded-lg border border-[var(--lab-border-soft)] p-2">
@@ -1945,7 +2021,7 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <p className="mb-4 text-[11px] text-[var(--lab-ink-3)]">示例：DeepSeek 填 https://api.deepseek.com，保存后会列出当前 key 可用的全部模型。</p>
+                <p className="mb-4 text-[11px] text-[var(--lab-ink-3)]">选好厂商后粘贴 Key，点保存即可拉取模型列表。</p>
               )}
               <div className="flex justify-end gap-2">
                 <button type="button" className="rounded-lg px-3 py-1.5 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)]" disabled={fetchingModels} onClick={() => setCustomApiOpen(false)}>取消</button>
@@ -1958,7 +2034,7 @@ export default function App() {
                       const baseUrl = customApiDraft.baseUrl.trim();
                       const key = customApiDraft.apiKey.trim();
                       if (!baseUrl || !key) {
-                        showToast("请填写 Base URL 和 API Key");
+                        showToast(apiPreset === "custom" ? "请填写 Base URL 和 API Key" : "请填写 API Key");
                         return;
                       }
                       if (!hasLabBridge() || !window.lab?.listModels) {
@@ -1972,14 +2048,22 @@ export default function App() {
                           showToast(res.error || "拉取模型失败");
                           return;
                         }
-                        const provider = detectProvider(baseUrl);
-                        const models = mapModelsResponse({ data: res.models }, provider).map((m) => ({
+                        const provider =
+                          API_PROVIDER_PRESETS.find((p) => p.id === apiPreset)?.provider ||
+                          detectProvider(baseUrl);
+                        const models = mapModelsResponse({ data: res.models }, provider === "unknown" ? detectProvider(baseUrl) : provider).map((m) => ({
                           ...m,
                           name: prettifyModelId(m.id),
                         }));
-                        const next: CustomApiConfig = { baseUrl, apiKey: key, provider, models };
+                        const next: CustomApiConfig = {
+                          baseUrl,
+                          apiKey: key,
+                          provider: provider === "unknown" ? detectProvider(baseUrl) : provider,
+                          models,
+                        };
                         setCustomApi(next);
                         setCustomApiDraft(next);
+                        setApiPreset(presetForBaseUrl(baseUrl));
                         saveCustomApi(next);
                         void window.lab.setApiKey(key);
                         setChatModel(models[0].id);

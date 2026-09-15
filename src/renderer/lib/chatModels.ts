@@ -4,7 +4,7 @@ export const CUSTOM_API_KEY = "lab.customApi.v1";
 export const CHAT_MODEL_KEY = "lab.chatModel";
 export const FETCHED_MODELS_KEY = "lab.fetchedModels.v1";
 
-export type ProviderId = "deepseek" | "openai" | "anthropic" | "unknown";
+export type ProviderId = "deepseek" | "openai" | "anthropic" | "kimi" | "glm" | "unknown";
 
 export interface FetchedModel {
   id: string;
@@ -22,14 +22,77 @@ export interface CustomApiConfig {
   models: FetchedModel[];
 }
 
+/** Built-in vendor endpoints for「添加 API」(OpenAI-compatible /models where possible). */
+export type ApiProviderPresetId = "deepseek" | "openai" | "anthropic" | "kimi" | "glm" | "custom";
+
+export interface ApiProviderPreset {
+  id: ApiProviderPresetId;
+  label: string;
+  /** Empty for custom — user types URL */
+  baseUrl: string;
+  provider: ProviderId;
+  hint?: string;
+}
+
+export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    provider: "deepseek",
+    hint: "推荐 · 填 Key 即可",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    provider: "openai",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    baseUrl: "https://api.anthropic.com",
+    provider: "anthropic",
+    hint: "官方 API；若拉模型失败可改用兼容网关",
+  },
+  {
+    id: "kimi",
+    label: "Kimi",
+    baseUrl: "https://api.moonshot.cn/v1",
+    provider: "kimi",
+  },
+  {
+    id: "glm",
+    label: "GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    provider: "glm",
+  },
+  {
+    id: "custom",
+    label: "自定义",
+    baseUrl: "",
+    provider: "unknown",
+    hint: "自行填写 Base URL",
+  },
+];
+
+export function presetForBaseUrl(baseUrl: string): ApiProviderPresetId {
+  const u = baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  if (!u) return "deepseek";
+  for (const p of API_PROVIDER_PRESETS) {
+    if (p.id === "custom" || !p.baseUrl) continue;
+    if (u === p.baseUrl.replace(/\/+$/, "").toLowerCase()) return p.id;
+  }
+  return "custom";
+}
+
 export function detectProvider(baseUrl: string): ProviderId {
   const u = baseUrl.toLowerCase();
   if (u.includes("deepseek")) return "deepseek";
   if (u.includes("openai") || u.includes("api.openai.com")) return "openai";
   if (u.includes("anthropic") || u.includes("claude")) return "anthropic";
-  // Moonshot / Kimi, Zhipu / GLM use OpenAI-compatible /models — brand unknown is fine
-  if (u.includes("moonshot") || u.includes("kimi")) return "unknown";
-  if (u.includes("bigmodel") || u.includes("zhipu") || u.includes("glm")) return "unknown";
+  if (u.includes("moonshot") || u.includes("kimi")) return "kimi";
+  if (u.includes("bigmodel") || u.includes("zhipu") || u.includes("glm")) return "glm";
   return "unknown";
 }
 
@@ -37,6 +100,8 @@ export function providerBrand(provider: ProviderId): string | undefined {
   if (provider === "deepseek") return "deepseek";
   if (provider === "openai") return "openai";
   if (provider === "anthropic") return "claude";
+  if (provider === "kimi") return "kimi";
+  if (provider === "glm") return "glm";
   return undefined;
 }
 
@@ -102,7 +167,13 @@ export function loadCustomApi(): CustomApiConfig {
 }
 
 function emptyApi(): CustomApiConfig {
-  return { baseUrl: "", apiKey: "", provider: "unknown", models: [] };
+  const deepseek = API_PROVIDER_PRESETS.find((p) => p.id === "deepseek")!;
+  return {
+    baseUrl: deepseek.baseUrl,
+    apiKey: "",
+    provider: "deepseek",
+    models: [],
+  };
 }
 
 export function saveCustomApi(cfg: CustomApiConfig) {
