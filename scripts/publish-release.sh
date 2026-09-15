@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Push main + create GitHub Release with local installer artifacts.
-# Usage: ./scripts/publish-release.sh [v0.1.1]
+# Usage: ./scripts/publish-release.sh [v0.1.2]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAG="${1:-v0.1.1}"
+TAG="${1:-v0.1.2}"
 VER="${TAG#v}"
 
 echo "[publish] pushing main…"
@@ -22,7 +22,10 @@ gh release create "$TAG" "$MAC" "$WIN" "$LINUX" \
   --title "Lab Agent ${VER}" \
   --notes "## Lab Agent ${VER}
 
-Fixes Gatekeeper **“damaged and can’t be opened”** on macOS (v0.1.0 had a broken/incomplete code signature).
+- Default appearance is **light (白昼)**
+- Fix Glass/skull skin crash when switching themes (\`scene.animate\` race)
+- macOS zip includes \`mac-first-open.command\` helper
+- Ad-hoc deep-signed mac build (not Apple-notarized)
 
 | Platform | File |
 | -------- | ---- |
@@ -30,14 +33,10 @@ Fixes Gatekeeper **“damaged and can’t be opened”** on macOS (v0.1.0 had a 
 | Windows x64 | \`Lab-Agent-${VER}-win-x64.zip\` |
 | Linux x64 | \`Lab-Agent-${VER}-linux-x64.tar.gz\` |
 
-### macOS
-- Ad-hoc **deep-signed** (passes \`codesign --verify --deep --strict\`); not Apple-notarized.
-- Unzip → drag \`Lab Agent.app\` to Applications.
-- If still blocked: **Right-click → Open**, or \`xattr -cr \"/Applications/Lab Agent.app\"\`.
-
-### Other
-- Windows: unzip and run \`Lab Agent.exe\`.
-- Linux: extract and run from the unpacked folder.
+### macOS first open
+1. Unzip → drag \`Lab Agent.app\` to Applications
+2. If blocked: System Settings → Privacy & Security → **Open Anyway**
+3. Or run \`mac-first-open.command\` from the unzipped folder
 "
 
 echo "[publish] done → https://github.com/lant1ng-1216/lab-agent/releases/tag/$TAG"

@@ -3,6 +3,7 @@
  */
 
 import { lazy, Suspense, useCallback, useEffect, useState, type RefObject } from "react";
+import SkinErrorBoundary from "./SkinErrorBoundary";
 
 const SkinFluidTextBackground = lazy(() => import("./fluid/SkinFluidTextBackground"));
 const SkinSkullBackground = lazy(() => import("./skull/SkinSkullBackground"));
@@ -59,33 +60,35 @@ export default function SkinAtmosphere({ mode, mainRef, layoutKey = "" }: Props)
   }
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden" aria-hidden>
-      <div
-        className="absolute inset-0 transition-opacity duration-500 ease-out"
-        style={{
-          opacity: showDay ? 1 : 0,
-          zIndex: showDay ? 1 : 0,
-        }}
-      >
-        <Suspense fallback={null}>
-          <SkinFluidTextBackground
-            active={mode === "light"}
-            getMainRect={getMainRect}
-            layoutKey={layoutKey}
-          />
-        </Suspense>
+    <SkinErrorBoundary mode={mode}>
+      <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden" aria-hidden>
+        <div
+          className="absolute inset-0 transition-opacity duration-500 ease-out"
+          style={{
+            opacity: showDay ? 1 : 0,
+            zIndex: showDay ? 1 : 0,
+          }}
+        >
+          <Suspense fallback={null}>
+            <SkinFluidTextBackground
+              active={mode === "light"}
+              getMainRect={getMainRect}
+              layoutKey={layoutKey}
+            />
+          </Suspense>
+        </div>
+        <div
+          className="absolute inset-0 transition-opacity duration-500 ease-out"
+          style={{
+            opacity: showNight ? 1 : 0,
+            zIndex: showNight ? 2 : 0,
+          }}
+        >
+          <Suspense fallback={null}>
+            <SkinSkullBackground active={mode === "dark"} onReady={() => setSkullReady(true)} />
+          </Suspense>
+        </div>
       </div>
-      <div
-        className="absolute inset-0 transition-opacity duration-500 ease-out"
-        style={{
-          opacity: showNight ? 1 : 0,
-          zIndex: showNight ? 2 : 0,
-        }}
-      >
-        <Suspense fallback={null}>
-          <SkinSkullBackground active={mode === "dark"} onReady={() => setSkullReady(true)} />
-        </Suspense>
-      </div>
-    </div>
+    </SkinErrorBoundary>
   );
 }

@@ -15,6 +15,7 @@ release/
 out/
 packaging/engine/
 .smoke-test/
+Lab-Agent-0.1.1.app/
 
 # Icon work backups
 build/*.bak-*

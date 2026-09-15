@@ -42,7 +42,8 @@ class Three {
 
 	setActive(active) {
 		this._active = active;
-		if (active && this._alive && !this._raf) {
+		// Only start the loop once scene + post stack exist (run() may still be awaiting WebGPU).
+		if (active && this._alive && !this._raf && this.scene && this.postProcessing) {
 			this.clock.getDelta();
 			this.#animate();
 		}
@@ -70,6 +71,10 @@ class Three {
 			this._raf = 0;
 			return;
 		}
+		if (!this.scene || !this.postProcessing || !this.fluidSim || !this.mouseTrail) {
+			this._raf = 0;
+			return;
+		}
 		const delta = this.clock.getDelta();
 
 		this.scene.animate(delta, this.clock.elapsedTime);
@@ -85,13 +90,13 @@ class Three {
 	}
 
 	#onResize() {
-		if (!this._alive || !this.context) return;
+		if (!this._alive || !this.context || !this.scene) return;
 		const { width, height } = this.context.getFullScreenDimensions();
 		const pr = this.context.pixelRatio;
 
 		this.context.onResize(width, height);
 		this.scene.onResize(width, height);
-		this.fluidSim.onResize(width * pr, height * pr);
+		this.fluidSim?.onResize(width * pr, height * pr);
 		this.mouseTrail?.resize?.(width * pr, height * pr);
 	}
 

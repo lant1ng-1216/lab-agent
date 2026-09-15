@@ -18,11 +18,21 @@ Download the latest build from [Releases](https://github.com/lant1ng-1216/lab-ag
 | Windows (x64) | `Lab-Agent-*-win-x64.zip` |
 | Linux (x64) | `Lab-Agent-*-linux-x64.tar.gz` |
 
-> macOS: builds are **ad-hoc deep-signed** (not Apple-notarized). Unzip → drag `Lab Agent.app` to Applications. If Gatekeeper blocks: **Right-click → Open**, or `xattr -cr "/Applications/Lab Agent.app"`.  
-> Windows: unzip and run `Lab Agent.exe`.  
-> Linux: extract the archive and run `lab-agent` (or `Lab Agent`) from the unpacked folder.
+#### macOS（重要）
+
+构建为 **ad-hoc 深签**，**尚未** Apple 公证。其他用户按下面做即可（与本机相同）：
+
+1. 解压 zip，将 `Lab Agent.app` 拖到「应用程序」
+2. 双击打开。若弹出「无法验证 / 未打开」→ **完成** → **系统设置 → 隐私与安全性 → 仍要打开**（只点一次）
+3. 也可解压后双击附带的 `mac-first-open.command`（清隔离并启动）
+4. 终端备选：`xattr -cr "/Applications/Lab Agent.app" && open "/Applications/Lab Agent.app"`
+
+> Windows：解压后运行 `Lab Agent.exe`（偶发 SmartScreen 选仍要运行即可）。  
+> Linux：解压后运行包内可执行文件。
 
 Configure a model API key after install (DeepSeek Anthropic-compatible endpoint is the default path — see Configuration).
+
+默认界面为 **白昼（浅色）**；可在应用内切换黑夜或「璃 / Glass」皮肤。
 
 ### Terminal (Lab Code only)
 

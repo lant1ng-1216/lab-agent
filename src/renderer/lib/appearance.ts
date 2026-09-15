@@ -17,7 +17,8 @@ const MODE_KEY = "lab.theme"; // keep existing key so current theme survives
 
 export function loadAppearance(): AppearanceState {
   let pack: AppearancePackId = "default";
-  let mode: ColorMode = "dark";
+  // Product default: 白昼 (light). Persisted user choice still wins when present.
+  let mode: ColorMode = "light";
   try {
     const p = localStorage.getItem(PACK_KEY);
     if (p === "default" || p === "skin") pack = p;

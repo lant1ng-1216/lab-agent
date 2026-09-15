@@ -41,6 +41,8 @@ export default function SkinSkullBackground({ active = true, onReady }: Props) {
           return;
         }
         three.setActive(active);
+        // Re-assert active after scene is ready (setActive during init is a no-op until scene exists).
+        if (active && three) three.setActive(true);
         ro = new ResizeObserver(() => {
           window.dispatchEvent(new Event("resize"));
         });
