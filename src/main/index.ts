@@ -196,17 +196,18 @@ function applyLabAgentEnv() {
     ...parseEnvFile(path.join(root, 'lab-agent.env')),
   };
   const key =
+    env.DEEPSEEK_API_KEY ||
+    env.API_KEY ||
     env.ANTHROPIC_AUTH_TOKEN ||
     env.ANTHROPIC_API_KEY ||
-    env.DEEPSEEK_API_KEY ||
     process.env.DEEPSEEK_API_KEY ||
     '';
   if (key && !key.includes('在此粘贴')) {
     settings.deepseekApiKey = key;
   }
-  const model = env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  const model = env.MODEL || env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   if (model) settings.model = model;
-  const rawBase = env.ANTHROPIC_BASE_URL || '';
+  const rawBase = env.BASE_URL || env.ANTHROPIC_BASE_URL || '';
   settings.apiBaseUrl = toOpenAiBase(rawBase || 'https://api.deepseek.com');
 }
 

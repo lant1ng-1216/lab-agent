@@ -16,7 +16,7 @@ if [ ! -d "$TARGET_DIR" ]; then
   exit 1
 fi
 
-BASE_URL_DEFAULT="https://api.deepseek.com/anthropic"
+BASE_URL_DEFAULT="https://api.deepseek.com"
 
 cd "$SCRIPT_DIR" || exit 1
 
@@ -36,8 +36,20 @@ if [ -n "$ENV_FILE" ]; then
   set +a
 fi
 
-: "${ANTHROPIC_BASE_URL:=$BASE_URL_DEFAULT}"
-export ANTHROPIC_BASE_URL
+# 官方 Base URL → 引擎内部端点（DeepSeek 自动补全路径，对用户不可见）
+RAW_BASE="${BASE_URL:-${ANTHROPIC_BASE_URL:-$BASE_URL_DEFAULT}}"
+RAW_BASE="${RAW_BASE%/}"
+RAW_BASE="${RAW_BASE%/v1}"
+case "$RAW_BASE" in
+  *deepseek*)
+    case "$RAW_BASE" in
+      */anthropic) ENGINE_BASE="$RAW_BASE" ;;
+      *) ENGINE_BASE="${RAW_BASE}/anthropic" ;;
+    esac
+    ;;
+  *) ENGINE_BASE="$RAW_BASE" ;;
+esac
+export ANTHROPIC_BASE_URL="$ENGINE_BASE"
 
 # 配置目录与本机 Claude Code 隔离
 if [ -z "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -46,8 +58,9 @@ fi
 mkdir -p "$CLAUDE_CONFIG_DIR"
 export CLAUDE_CONFIG_DIR
 
-KEY="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
-if [ -z "$KEY" ] || [ "$KEY" = "sk-在此粘贴你的DeepSeek密钥" ]; then
+KEY="${DEEPSEEK_API_KEY:-${API_KEY:-${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}}}"
+PLACEHOLDER="sk-在此粘贴你的密钥"
+if [ -z "$KEY" ] || [ "$KEY" = "$PLACEHOLDER" ] || [ "$KEY" = "sk-在此粘贴你的DeepSeek密钥" ]; then
   echo ""
   echo "未检测到 DeepSeek API Key。"
   echo "申请地址：https://platform.deepseek.com/api_keys"
@@ -59,6 +72,7 @@ if [ -z "$KEY" ] || [ "$KEY" = "sk-在此粘贴你的DeepSeek密钥" ]; then
     echo "[!] 未输入密钥，退出。"
     exit 1
   fi
+  export DEEPSEEK_API_KEY="$KEY"
   export ANTHROPIC_AUTH_TOKEN="$KEY"
   printf "是否保存到 lab-agent.env 以便下次免输入？(y/N)："
   read -r SAVE
@@ -68,24 +82,29 @@ if [ -z "$KEY" ] || [ "$KEY" = "sk-在此粘贴你的DeepSeek密钥" ]; then
     else
       touch ./lab-agent.env
     fi
-    if grep -q "^ANTHROPIC_AUTH_TOKEN=" ./lab-agent.env 2>/dev/null; then
+    if grep -q "^DEEPSEEK_API_KEY=" ./lab-agent.env 2>/dev/null; then
+      tmp="$(mktemp)"
+      sed "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$KEY|" ./lab-agent.env > "$tmp" && mv "$tmp" ./lab-agent.env
+    elif grep -q "^ANTHROPIC_AUTH_TOKEN=" ./lab-agent.env 2>/dev/null; then
       tmp="$(mktemp)"
       sed "s|^ANTHROPIC_AUTH_TOKEN=.*|ANTHROPIC_AUTH_TOKEN=$KEY|" ./lab-agent.env > "$tmp" && mv "$tmp" ./lab-agent.env
     else
-      echo "ANTHROPIC_AUTH_TOKEN=$KEY" >> ./lab-agent.env
+      echo "DEEPSEEK_API_KEY=$KEY" >> ./lab-agent.env
     fi
     chmod 600 ./lab-agent.env
     echo "[*] 已保存到 lab-agent.env（权限 600）"
   fi
 else
+  export DEEPSEEK_API_KEY="$KEY"
   export ANTHROPIC_AUTH_TOKEN="$KEY"
 fi
 
-export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-deepseek-flash}"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-flash}"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-flash}"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-deepseek-flash}"
-export CLAUDE_CODE_SUBAGENT_MODEL="${CLAUDE_CODE_SUBAGENT_MODEL:-deepseek-flash}"
+MODEL_NAME="${MODEL:-${ANTHROPIC_MODEL:-deepseek-flash}}"
+export ANTHROPIC_MODEL="$MODEL_NAME"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_DEFAULT_OPUS_MODEL:-$MODEL_NAME}"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="${ANTHROPIC_DEFAULT_SONNET_MODEL:-$MODEL_NAME}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MODEL_NAME}"
+export CLAUDE_CODE_SUBAGENT_MODEL="${CLAUDE_CODE_SUBAGENT_MODEL:-$MODEL_NAME}"
 
 echo "[*] 正在校验 DeepSeek 端点 ..."
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
@@ -98,7 +117,7 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
 case "$code" in
   200) echo "[+] 鉴权与网络正常" ;;
   401|403) echo "[x] 密钥无效或无权访问（HTTP $code）。请检查 API Key 是否正确、账户是否有余额。"; exit 1 ;;
-  000) echo "[x] 无法连接 ${ANTHROPIC_BASE_URL}，请检查网络。"; exit 1 ;;
+  000) echo "[x] 无法连接 API，请检查网络。"; exit 1 ;;
   *)   echo "[!] 端点返回 HTTP $code，仍尝试启动 ..." ;;
 esac
 

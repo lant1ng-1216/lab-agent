@@ -184,8 +184,32 @@ function buildEnv(
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || fromFile.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || '1',
   }
   merged.PATH = enginePathAugment(root, merged.PATH)
-  if (!merged.ANTHROPIC_BASE_URL) {
-    merged.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
+  const key =
+    merged.DEEPSEEK_API_KEY ||
+    merged.API_KEY ||
+    merged.ANTHROPIC_AUTH_TOKEN ||
+    merged.ANTHROPIC_API_KEY ||
+    ''
+  if (key && !String(key).includes('在此粘贴')) {
+    merged.ANTHROPIC_AUTH_TOKEN = key
+    merged.ANTHROPIC_API_KEY = key
+  }
+  const rawBase = String(merged.BASE_URL || merged.ANTHROPIC_BASE_URL || 'https://api.deepseek.com')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/v1$/i, '')
+  let engineBase = rawBase || 'https://api.deepseek.com'
+  if (/deepseek/i.test(engineBase) && !/anthropic/i.test(engineBase)) {
+    engineBase = `${engineBase}/anthropic`
+  }
+  merged.ANTHROPIC_BASE_URL = engineBase
+  const model = merged.MODEL || merged.ANTHROPIC_MODEL || merged.ANTHROPIC_DEFAULT_SONNET_MODEL
+  if (model) {
+    merged.ANTHROPIC_MODEL = model
+    merged.ANTHROPIC_DEFAULT_OPUS_MODEL = merged.ANTHROPIC_DEFAULT_OPUS_MODEL || model
+    merged.ANTHROPIC_DEFAULT_SONNET_MODEL = merged.ANTHROPIC_DEFAULT_SONNET_MODEL || model
+    merged.ANTHROPIC_DEFAULT_HAIKU_MODEL = merged.ANTHROPIC_DEFAULT_HAIKU_MODEL || model
+    merged.CLAUDE_CODE_SUBAGENT_MODEL = merged.CLAUDE_CODE_SUBAGENT_MODEL || model
   }
   return merged
 }

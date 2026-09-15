@@ -79,13 +79,12 @@ Inspired by how projects like [OpenCode](https://github.com/anomalyco/opencode) 
 
 ### Configuration
 
-Copy [`agents/lab-coding/lab-agent.env.example`](./agents/lab-coding/lab-agent.env.example) to `lab-agent.env` (never commit the real file) and set:
+Copy [`agents/lab-coding/lab-agent.env.example`](./agents/lab-coding/lab-agent.env.example) to `lab-agent.env` (never commit the real file). Set your API key and official base URL:
 
-- `ANTHROPIC_AUTH_TOKEN` — your **DeepSeek** or **OpenAI** API key
-- `ANTHROPIC_BASE_URL` — DeepSeek: `https://api.deepseek.com/anthropic` · OpenAI: `https://api.openai.com`
-- model vars as needed (defaults lean on DeepSeek Flash)
+- **DeepSeek** — key + `https://api.deepseek.com` (default; DeepSeek Flash)
+- **OpenAI** — key + `https://api.openai.com/v1`
 
-The desktop app can also take a key from its settings UI (DeepSeek / OpenAI presets).
+The desktop app can also take a key from its settings UI.
 
 ---
 
