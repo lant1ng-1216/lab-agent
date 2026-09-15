@@ -33,12 +33,6 @@ contextBridge.exposeInMainWorld('lab', {
       baseUrl: string;
       model: string;
     }>,
-  getInstallStatus: () =>
-    ipcRenderer.invoke(IPC.GET_INSTALL_STATUS) as Promise<import('../shared/protocol').InstallStatusPayload>,
-  installToStable: () =>
-    ipcRenderer.invoke(IPC.INSTALL_TO_STABLE) as Promise<{ ok: boolean; error?: string; relaunchPath?: string }>,
-  ensureDesktopShortcut: () =>
-    ipcRenderer.invoke(IPC.ENSURE_DESKTOP_SHORTCUT) as Promise<{ ok: boolean; error?: string }>,
   onAgentEvent: (cb: (sessionKey: string, event: AgentBridgeEvent) => void) => {
     const listener = (_: Electron.IpcRendererEvent, payload: { sessionKey: string; event: AgentBridgeEvent }) =>
       cb(payload.sessionKey, payload.event);

@@ -189,12 +189,6 @@ export default function App() {
     presetForBaseUrl(loadCustomApi().baseUrl),
   );
   const [fetchingModels, setFetchingModels] = useState(false);
-  const [installPrompt, setInstallPrompt] = useState<{
-    needsInstall: boolean;
-    needsDesktopShortcut: boolean;
-    hint: string;
-  } | null>(null);
-  const [installBusy, setInstallBusy] = useState(false);
 
   const initialMode = useRef(loadShellMode());
   const persisted = useRef(loadSessionBucket(initialMode.current));
@@ -287,30 +281,6 @@ export default function App() {
       showToast(LAB_PREVIEW_HINT);
     }
   }, [desktopReady, showToast]);
-
-  // First-run: offer one-click install + Desktop shortcut (no manual drag required)
-  useEffect(() => {
-    if (!desktopReady || !window.lab?.getInstallStatus) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const s = await window.lab.getInstallStatus();
-        if (cancelled) return;
-        if (s.needsInstall || s.needsDesktopShortcut) {
-          setInstallPrompt({
-            needsInstall: s.needsInstall,
-            needsDesktopShortcut: s.needsDesktopShortcut,
-            hint: s.hint || "",
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [desktopReady]);
 
   // Cold-start: mount main cwd to active workspace
   useEffect(() => {
@@ -1957,78 +1927,6 @@ export default function App() {
               </button>
                 </>
               ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        {installPrompt ? (
-          <div className="titlebar-no-drag absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-            <div
-              className="w-[420px] max-w-[92vw] rounded-2xl border border-[var(--lab-border)] bg-[var(--lab-surface-solid)] p-5 shadow-[0_24px_64px_rgba(0,0,0,0.45)]"
-              data-lab-glass
-            >
-              <div className="text-[15px] font-semibold text-[var(--lab-ink)]">
-                {installPrompt.needsInstall ? "完成安装" : "在桌面放上打开图标"}
-              </div>
-              <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--lab-ink-2)]">
-                {installPrompt.hint ||
-                  (installPrompt.needsInstall
-                    ? "点一下即可安装到「应用程序」，并在桌面放上图标，之后从桌面打开即可。"
-                    : "在桌面放上 Lab Agent 图标，方便下次找到。")}
-              </p>
-              <p className="mt-2 text-[11px] text-[var(--lab-ink-3)]">
-                若系统曾提示「无法验证」：系统设置 → 隐私与安全性 → 仍要打开（只需一次）。
-              </p>
-              <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="rounded-lg px-3 py-1.5 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)]"
-                  disabled={installBusy}
-                  onClick={() => setInstallPrompt(null)}
-                >
-                  稍后
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-[var(--lab-ink)] px-3 py-1.5 text-[12px] font-medium text-[var(--lab-bg)] disabled:opacity-60"
-                  disabled={installBusy}
-                  onClick={() => {
-                    void (async () => {
-                      setInstallBusy(true);
-                      try {
-                        if (installPrompt.needsInstall) {
-                          const res = await window.lab.installToStable();
-                          if (!res.ok) {
-                            showToast(res.error || "安装失败");
-                            setInstallBusy(false);
-                            return;
-                          }
-                          showToast("正在安装并重启…", { icon: "check" });
-                          return;
-                        }
-                        const res = await window.lab.ensureDesktopShortcut();
-                        if (!res.ok) {
-                          showToast(res.error || "创建桌面图标失败");
-                          setInstallBusy(false);
-                          return;
-                        }
-                        showToast("已在桌面放上 Lab Agent", { icon: "check" });
-                        setInstallPrompt(null);
-                      } catch (err) {
-                        showToast(`失败：${err instanceof Error ? err.message : String(err)}`);
-                      } finally {
-                        setInstallBusy(false);
-                      }
-                    })();
-                  }}
-                >
-                  {installBusy
-                    ? "处理中…"
-                    : installPrompt.needsInstall
-                      ? "安装并在桌面创建图标"
-                      : "在桌面创建图标"}
-                </button>
-              </div>
             </div>
           </div>
         ) : null}
