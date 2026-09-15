@@ -608,6 +608,8 @@ function registerIpc() {
 app.whenReady().then(() => {
   applyLabAgentEnv();
 
+  labCodingBridge.setConfigDir(path.join(app.getPath('userData'), 'lab-coding-config'));
+
   const iconEarly = resolveAppIcon();
   applyDockIcon(iconEarly);
 

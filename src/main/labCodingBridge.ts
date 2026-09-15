@@ -139,16 +139,41 @@ function loadEnvFile(filePath: string): Record<string, string> {
   return out
 }
 
-function buildEnv(root: string, extra?: Record<string, string>): NodeJS.ProcessEnv {
+/** Prefer bundled rg next to the engine, then common Homebrew paths (Electron PATH is often bare). */
+function enginePathAugment(root: string, existing?: string): string {
+  const sep = path.delimiter
+  const prefix: string[] = []
+  const bundledBin = path.join(root, 'bin')
+  if (fs.existsSync(bundledBin)) prefix.push(bundledBin)
+  if (process.platform === 'darwin') {
+    for (const p of ['/opt/homebrew/bin', '/usr/local/bin']) {
+      if (fs.existsSync(p)) prefix.push(p)
+    }
+  } else if (process.platform === 'linux') {
+    for (const p of ['/usr/local/bin', '/home/linuxbrew/.linuxbrew/bin']) {
+      if (fs.existsSync(p)) prefix.push(p)
+    }
+  }
+  const base =
+    existing ||
+    process.env.PATH ||
+    (process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin:/usr/sbin:/sbin')
+  return prefix.length ? `${prefix.join(sep)}${sep}${base}` : base
+}
+
+function buildEnv(
+  root: string,
+  configDir: string,
+  extra?: Record<string, string>,
+): NodeJS.ProcessEnv {
   const fromFile = {
     ...loadEnvFile(path.join(root, 'freecode.env')), // legacy fallback
     ...loadEnvFile(path.join(root, 'lab-agent.env')), // wins
   }
-  const configDir = path.join(root, '.lab-agent-config')
   try {
     fs.mkdirSync(configDir, { recursive: true })
   } catch {
-    /* ignore */
+    /* ignore — surfaced when engine fails */
   }
   const merged: NodeJS.ProcessEnv = {
     ...process.env,
@@ -158,6 +183,7 @@ function buildEnv(root: string, extra?: Record<string, string>): NodeJS.ProcessE
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || fromFile.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || '1',
   }
+  merged.PATH = enginePathAugment(root, merged.PATH)
   if (!merged.ANTHROPIC_BASE_URL) {
     merged.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
   }
@@ -490,8 +516,44 @@ function sanitizeProjectPath(name: string): string {
 export class LabCodingBridge {
   private root = resolveLabCodingRoot()
   private sessions = new Map<string, SessionState>()
+  /** Writable config (sessions/transcripts). Prefer Electron userData — never app Resources (App Translocation is read-only). */
+  private configDir: string
 
-  constructor(private emit: (sessionKey: string, event: BridgeEvent) => void) {}
+  constructor(
+    private emit: (sessionKey: string, event: BridgeEvent) => void,
+    configDir?: string,
+  ) {
+    this.configDir = configDir || path.join(this.root, '.lab-agent-config')
+    try {
+      fs.mkdirSync(this.configDir, { recursive: true })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Call from main after app ready with `path.join(app.getPath('userData'), 'lab-coding-config')`. */
+  setConfigDir(dir: string) {
+    this.configDir = dir
+    try {
+      fs.mkdirSync(this.configDir, { recursive: true })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private engineLogPath(): string {
+    return path.join(path.dirname(this.configDir), 'logs', 'lab-coding-engine.log')
+  }
+
+  private appendEngineLog(line: string) {
+    try {
+      const file = this.engineLogPath()
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`, 'utf8')
+    } catch {
+      /* ignore */
+    }
+  }
 
   private clearPermTimers(s: SessionState) {
     for (const t of s.permTimers.values()) clearTimeout(t)
@@ -636,8 +698,7 @@ export class LabCodingBridge {
   }
 
   private transcriptPath(cwd: string, sessionId: string): string | undefined {
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR || path.join(this.root, '.lab-agent-config')
+    const configDir = process.env.CLAUDE_CONFIG_DIR || this.configDir
     const projectsRoot = path.join(configDir, 'projects')
     const cwds = new Set<string>([cwd])
     try {
@@ -714,8 +775,7 @@ export class LabCodingBridge {
 
   private purgeTranscript(cwd: string | undefined, sessionId: string | undefined) {
     if (!cwd || !sessionId) return
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR || path.join(this.root, '.lab-agent-config')
+    const configDir = process.env.CLAUDE_CONFIG_DIR || this.configDir
     const projectsRoot = path.join(configDir, 'projects')
     const cwds = new Set<string>([cwd])
     try {
@@ -1122,7 +1182,18 @@ export class LabCodingBridge {
       }
       envExtra.ANTHROPIC_BASE_URL = base
     }
-    const env = buildEnv(this.root, envExtra)
+    const env = buildEnv(this.root, this.configDir, envExtra)
+    try {
+      fs.accessSync(this.configDir, fs.constants.W_OK)
+    } catch (err) {
+      const tip = err instanceof Error ? err.message : String(err)
+      this.appendEngineLog(`configDir not writable: ${this.configDir} (${tip})`)
+      this.emit(req.sessionKey, {
+        kind: 'error',
+        text: `引擎配置目录不可写：${this.configDir}。请把 Lab Agent.app 拖到「应用程序」后再打开（勿从「下载」直接启动）。`,
+      })
+      return
+    }
     const key = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY
     if (!key || String(key).includes('在此粘贴')) {
       this.emit(req.sessionKey, {
@@ -1213,13 +1284,30 @@ export class LabCodingBridge {
       state.turnBusy = false
       if (wasBusy) {
         this.finalizeRunningTools(state, req.sessionKey, true)
-        if (code && code !== 0 && !state.assistantAccum) {
-          const tip = errBuf.trim().split(/\n/).slice(-4).join(' ') || `exit ${code}`
-          this.emit(req.sessionKey, { kind: 'error', text: tip })
+        const tip = errBuf
+          .trim()
+          .split(/\n/)
+          .slice(-6)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .slice(0, 800)
+        this.appendEngineLog(
+          `session=${req.sessionKey} exit=${code ?? 'null'} accum=${state.assistantAccum.length} stderr=${tip || '(empty)'}`,
+        )
+        if (!state.assistantAccum) {
+          const detail =
+            tip ||
+            (code
+              ? `exit ${code}`
+              : '无 stderr。若从「下载」直接打开，请先拖到「应用程序」再启动。')
+          this.emit(req.sessionKey, {
+            kind: 'error',
+            text: `引擎异常退出${code != null && code !== 0 ? ` (${code})` : ''}：${detail}`,
+          })
         } else {
           this.emit(req.sessionKey, {
             kind: 'result',
-            text: state.assistantAccum || (code ? `进程退出 (${code})` : '已结束'),
+            text: state.assistantAccum,
             sessionId: state.claudeSessionId,
             isError: Boolean(code && code !== 0),
             messageUuid: state.lastAssistantUuid,
