@@ -108,8 +108,12 @@ Issues and PRs welcome. Please note terminal vs desktop, OS, and steps to reprod
 
 Bugs / Windows feedback: **[zfu9751@gmail.com](mailto:zfu9751@gmail.com)**
 
+### Acknowledgments
+
+Thanks to the following projects and teams: **Beautiful UI**, **DiceBear**, **Codrops**, **DeepSeek harness**.
+
 ### License
 
-[Apache-2.0](./LICENSE)
+[Apache-2.0](./LICENSE). You may use, modify, and distribute Lab Agent (including commercially), as long as you keep the license and copyright notices. Apache-2.0 also includes an express patent grant; it is not a copyleft license (unlike GPL).
 
 Formerly **vibe-lab**; renamed to **lab-agent** (stars preserved).
