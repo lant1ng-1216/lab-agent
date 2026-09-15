@@ -1,0 +1,37 @@
+# Dependencies & build
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store
+
+# Env / secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Desktop packaging artifacts
+release/
+out/
+
+# Icon work backups
+build/*.bak-*
+
+# Lab Coding engine — local artifacts / secrets
+agents/lab-coding/node_modules/
+agents/lab-coding/cli
+agents/lab-coding/cli-dev
+agents/lab-coding/dist/
+agents/lab-coding/lab-agent.env
+agents/lab-coding/freecode.env
+agents/lab-coding/.lab-agent-config/
+agents/lab-coding/.freecode-config/
+agents/lab-coding/.workbuddy/
+agents/lab-coding/.git/
+agents/lab-coding/openclaw/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.cursor/

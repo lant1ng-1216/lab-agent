@@ -1,0 +1,45 @@
+{
+  "name": "lab-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lab Agent — dual-window desktop supervisor + coding agent",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "desktop": "node scripts/dev.mjs desktop",
+    "build": "tsc -p tsconfig.json && node scripts/copy-lab-coding.mjs && vite build",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/three": "^0.175.0",
+    "@vitejs/plugin-react": "^4.5.2",
+    "electron": "^35.0.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2",
+    "ws": "^8.21.3"
+  },
+  "dependencies": {
+    "@dicebear/core": "^10.7.0",
+    "@dicebear/styles": "^10.6.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@react-three/drei": "^10.0.6",
+    "@react-three/fiber": "^9.1.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "^12.11.6",
+    "glimm": "^0.3.0",
+    "maath": "^0.10.8",
+    "node-pty": "^1.1.0",
+    "postprocessing": "^6.37.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.175.0"
+  }
+}

@@ -1,0 +1,27 @@
+name: Register Repository
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Register repository
+        env:
+          PRIVATE_KEY: ${{ secrets.FCF_PRIVATE_KEY }}
+          RPC_URL: ${{ vars.FCF_RPC_URL }}
+          FCF_CONTRACT: ${{ vars.FCF_CONTRACT }}
+        run: |
+          npm exec --yes --package=@freecodexyz/cli@alpha -- fcf register \
+            --contract "$FCF_CONTRACT"

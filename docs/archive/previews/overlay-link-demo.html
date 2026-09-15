@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lab Agent · 桌面 App 跨窗连线预览</title>
+  <style>
+    :root {
+      --desk: #3a3d45;
+      --lab: #a78bfa;
+      --code: #38bdf8;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: "SF Pro Text", "PingFang SC", -apple-system, sans-serif;
+      background: #1a1b1e;
+      color: var(--text);
+      overflow: hidden;
+      user-select: none;
+    }
+    .chrome {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid #2c3038;
+      background: #121318;
+      font-size: 13px;
+      gap: 12px;
+    }
+    .chrome strong { color: var(--lab); }
+    .hint { color: var(--muted); font-size: 12px; }
+    .desk {
+      position: relative;
+      height: calc(100% - 48px);
+      overflow: hidden;
+      background:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='2' cy='2' r='1' fill='%23ffffff10'/%3E%3C/svg%3E"),
+        linear-gradient(145deg, #454954 0%, #2f323a 55%, #262830 100%);
+    }
+
+    /* 全屏透明 overlay：专画跨窗连线（模拟 always-on-top） */
+    #overlay {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 100;
+      overflow: visible;
+    }
+
+    .app {
+      position: absolute;
+      border-radius: 12px;
+      overflow: visible;
+      z-index: 10;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.08),
+        0 24px 60px rgba(0,0,0,.5);
+      background: #1e1f24;
+      min-width: 280px;
+      min-height: 220px;
+    }
+    .app-inner {
+      border-radius: 12px;
+      overflow: hidden;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #1e1f24;
+    }
+    .app.lab {
+      width: 340px;
+      height: 460px;
+      left: 6%;
+      top: 10%;
+    }
+    .app.ide {
+      width: 620px;
+      height: 500px;
+      left: 42%;
+      top: 12%;
+    }
+
+    .titlebar {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      background: #2a2b31;
+      border-bottom: 1px solid #3a3b42;
+      cursor: grab;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .titlebar:active { cursor: grabbing; }
+    .dots { display: flex; gap: 6px; }
+    .dots i {
+      width: 11px; height: 11px; border-radius: 50%; display: block;
+    }
+    .dots i:nth-child(1) { background: #ff5f57; }
+    .dots i:nth-child(2) { background: #febc2e; }
+    .dots i:nth-child(3) { background: #28c840; }
+    .app-name { font-weight: 600; letter-spacing: .2px; }
+    .app.lab .app-name { color: #ddd6fe; }
+    .app.ide .app-name { color: #bae6fd; }
+    .badge {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+    }
+    .lab .badge { color: var(--lab); }
+    .ide .badge { color: #4ade80; }
+
+    .port {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,.9);
+      background: #ffffff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,.4);
+      z-index: 120;
+      /* 位置由 JS 按对向边动态写入，禁止写死 left/right */
+    }
+
+    /* Lab = 独立桌面 App（监工），不是终端 */
+    .lab-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: #18181c;
+    }
+    .lab-header {
+      padding: 12px 14px 8px;
+      border-bottom: 1px solid #2c2d33;
+    }
+    .lab-header h2 {
+      margin: 0 0 4px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .lab-header p {
+      margin: 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .chat {
+      flex: 1;
+      overflow: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bubble {
+      max-width: 92%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .bubble.me {
+      align-self: flex-end;
+      background: #3b2f63;
+      color: #ede9fe;
+    }
+    .bubble.bot {
+      align-self: flex-start;
+      background: #26272e;
+      color: #d4d4d8;
+    }
+    .bubble.warn {
+      border: 1px solid #f87171;
+      background: #2a1a1a;
+      color: #fecaca;
+    }
+    .composer {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid #2c2d33;
+      background: #1c1d22;
+    }
+    .composer input {
+      flex: 1;
+      border: 1px solid #3a3b42;
+      background: #121318;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+      pointer-events: none;
+    }
+    .composer span {
+      border: none;
+      background: var(--lab);
+      color: #1a1025;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* IDE = 主流 Coding Agent 桌面端（Cursor 类），不是终端 */
+    .ide-body {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 140px 1fr 180px;
+      min-height: 0;
+      background: #15161a;
+    }
+    .sidebar {
+      background: #1a1b20;
+      border-right: 1px solid #2c2d33;
+      padding: 10px 8px;
+      font-size: 11px;
+      color: #a1a1aa;
+    }
+    .sidebar .ttl {
+      font-size: 10px;
+      letter-spacing: .08em;
+      color: #71717a;
+      margin-bottom: 8px;
+    }
+    .sidebar .f {
+      padding: 4px 6px;
+      border-radius: 4px;
+      margin-bottom: 2px;
+    }
+    .sidebar .f.on {
+      background: #2a2b33;
+      color: #e4e4e7;
+    }
+    .editor {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .tabs {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 8px;
+      background: #1a1b20;
+      border-bottom: 1px solid #2c2d33;
+      font-size: 11px;
+    }
+    .tab {
+      padding: 4px 10px;
+      border-radius: 6px 6px 0 0;
+      color: #a1a1aa;
+    }
+    .tab.on {
+      background: #15161a;
+      color: #f4f4f5;
+      border: 1px solid #2c2d33;
+      border-bottom-color: #15161a;
+    }
+    .code {
+      flex: 1;
+      margin: 0;
+      padding: 12px 14px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: #d4d4d8;
+      white-space: pre;
+      overflow: auto;
+    }
+    .code .kw { color: #c084fc; }
+    .code .fn { color: #67e8f9; }
+    .code .str { color: #86efac; }
+    .agent-pane {
+      border-left: 1px solid #2c2d33;
+      background: #1a1b20;
+      padding: 10px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .agent-pane .ttl {
+      font-weight: 600;
+      color: #bae6fd;
+      font-size: 12px;
+    }
+    .agent-pane .msg {
+      background: #121318;
+      border: 1px solid #2c2d33;
+      border-radius: 8px;
+      padding: 8px;
+      color: #d4d4d8;
+      line-height: 1.45;
+    }
+    .statusbar {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 10px;
+      background: #0e639c;
+      color: #e0f2fe;
+      font-size: 10px;
+      flex-shrink: 0;
+    }
+
+    .legend {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      z-index: 200;
+      background: rgba(18,19,24,.92);
+      border: 1px solid #3a3b42;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 12px;
+      max-width: 380px;
+      pointer-events: none;
+    }
+    .legend h1 { margin: 0 0 6px; font-size: 13px; }
+    .legend p { margin: 0 0 4px; color: var(--muted); }
+    .legend em { color: #fde68a; font-style: normal; }
+
+    .toggle {
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      z-index: 200;
+      display: flex;
+      gap: 8px;
+    }
+    .toggle button {
+      border: 1px solid #3a3b42;
+      background: #1c1e24;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .toggle button.on {
+      border-color: var(--lab);
+      color: #ddd6fe;
+    }
+  </style>
+</head>
+<body>
+  <div class="chrome">
+    <div><strong>Lab Agent</strong> · 桌面 App ↔ 桌面 App 跨窗连线（不是终端对终端）</div>
+    <div class="hint">拖窗可对调左右上下 · 锚点会换边，线不穿窗</div>
+  </div>
+
+  <div class="desk" id="desk">
+    <!-- Lab Agent 桌面端（独立 Electron App） -->
+    <div class="app lab" id="winLab">
+      <div class="app-inner">
+        <div class="titlebar" data-drag="winLab">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="app-name">Lab Agent.app</span>
+          <span class="badge">监工</span>
+        </div>
+        <div class="lab-body">
+          <div class="lab-header">
+            <h2>意图与验收</h2>
+            <p>独立桌面 App · 单向镜像 Coding 桌面端上下文</p>
+          </div>
+          <div class="chat">
+            <div class="bubble me">做一款背单词 App</div>
+            <div class="bubble bot">PRD v1 已确认。正在连接旁边的 Coding 桌面端…</div>
+            <div class="bubble bot">← 已镜像到：WordCard.tsx 改动 / 进度汇报</div>
+            <div class="bubble warn">⚠ 偏离：多做了「每日分享浮层」——PRD 没有这项</div>
+          </div>
+          <div class="composer">
+            <input value="删掉分享，按 PRD 验收" readonly />
+            <span>发送</span>
+          </div>
+        </div>
+      </div>
+      <div class="port" id="portLab"></div>
+    </div>
+
+    <!-- 主流 AI Coding Agent 桌面端（Cursor 类） -->
+    <div class="app ide" id="winIde">
+      <div class="app-inner">
+        <div class="titlebar" data-drag="winIde">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="app-name">Cursor</span>
+          <span class="badge">coding</span>
+        </div>
+        <div class="ide-body">
+          <aside class="sidebar">
+            <div class="ttl">EXPLORER</div>
+            <div class="f">src/</div>
+            <div class="f on">  WordCard.tsx</div>
+            <div class="f">  App.tsx</div>
+            <div class="f">words.json</div>
+          </aside>
+          <section class="editor">
+            <div class="tabs">
+              <div class="tab on">WordCard.tsx</div>
+              <div class="tab">App.tsx</div>
+            </div>
+            <pre class="code"><span class="kw">export function</span> <span class="fn">WordCard</span>({ word }) {
+  <span class="kw">const</span> [flipped, setFlipped] = useState(<span class="kw">false</span>)
+  <span class="kw">return</span> (
+    &lt;div onClick={() =&gt; setFlipped(!flipped)}&gt;
+      {flipped ? word.meaning : word.text}
+    &lt;/div&gt;
+  )
+}</pre>
+          </section>
+          <aside class="agent-pane">
+            <div class="ttl">Agent</div>
+            <div class="msg">收到 Lab 下发的 PRD，正在实现翻卡流程…</div>
+            <div class="msg">已改 WordCard · 准备汇报 diff</div>
+          </aside>
+        </div>
+        <div class="statusbar">
+          <span>main*</span>
+          <span>TypeScript</span>
+          <span>Ln 4, Col 12</span>
+        </div>
+      </div>
+      <div class="port" id="portIde"></div>
+    </div>
+
+    <svg id="overlay" xmlns="http://www.w3.org/2000/svg">
+      <!-- 正常白色连线：可见但不过亮、不过粗；拖窗时路径实时重算 -->
+      <path id="link" d="" fill="none" stroke="#ffffff" stroke-opacity="0.78" stroke-width="1.75" stroke-linecap="round" />
+      <circle id="mid" r="3.5" fill="#ffffff" fill-opacity="0.9" stroke="#ffffff" stroke-opacity="0.35" stroke-width="4" />
+      <text id="labelR" fill="#ffffff" fill-opacity="0.55" font-size="11" font-family="sans-serif">PRD / 指令 →</text>
+      <text id="labelL" fill="#ffffff" fill-opacity="0.55" font-size="11" font-family="sans-serif">← diff / 上下文镜像</text>
+    </svg>
+
+    <div class="legend">
+      <h1>形态：桌面 App ↔ 桌面 App</h1>
+      <p>白色细线 = 连接态；拖窗路径 + <em>对向锚点</em>实时自适应。</p>
+      <p>对调左右时：端口换到「面对面」的那条边，避免绕线穿窗。</p>
+    </div>
+
+    <div class="toggle">
+      <button id="btnLine" class="on" type="button">显示连线：开</button>
+    </div>
+  </div>
+
+  <script>
+    const desk = document.getElementById('desk');
+    const overlay = document.getElementById('overlay');
+    const link = document.getElementById('link');
+    const mid = document.getElementById('mid');
+    const labelR = document.getElementById('labelR');
+    const labelL = document.getElementById('labelL');
+    const winLab = document.getElementById('winLab');
+    const winIde = document.getElementById('winIde');
+    const portLab = document.getElementById('portLab');
+    const portIde = document.getElementById('portIde');
+    let showLine = true;
+    let drag = null;
+    let raf = 0;
+
+    function syncSvgSize() {
+      const w = desk.clientWidth;
+      const h = desk.clientHeight;
+      overlay.setAttribute('width', String(w));
+      overlay.setAttribute('height', String(h));
+      overlay.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      overlay.style.width = w + 'px';
+      overlay.style.height = h + 'px';
+    }
+
+    function winRect(win) {
+      const d = desk.getBoundingClientRect();
+      const r = win.getBoundingClientRect();
+      return {
+        left: r.left - d.left,
+        top: r.top - d.top,
+        right: r.right - d.left,
+        bottom: r.bottom - d.top,
+        width: r.width,
+        height: r.height,
+        cx: r.left - d.left + r.width / 2,
+        cy: r.top - d.top + r.height / 2,
+      };
+    }
+
+    /**
+     * 动态对向边：对方中心在自己哪一侧，就用哪条边做锚点。
+     * 解决 Lab/Cursor 左右对调后端口写死导致绕线穿窗。
+     */
+    function facingSide(self, other) {
+      const dx = other.cx - self.cx;
+      const dy = other.cy - self.cy;
+      if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+      return dy >= 0 ? 'bottom' : 'top';
+    }
+
+    function anchor(rect, side) {
+      switch (side) {
+        case 'left': return { x: rect.left, y: rect.cy, nx: -1, ny: 0 };
+        case 'right': return { x: rect.right, y: rect.cy, nx: 1, ny: 0 };
+        case 'top': return { x: rect.cx, y: rect.top, nx: 0, ny: -1 };
+        case 'bottom': return { x: rect.cx, y: rect.bottom, nx: 0, ny: 1 };
+      }
+    }
+
+    function placePort(el, side) {
+      el.style.left = el.style.right = el.style.top = el.style.bottom = 'auto';
+      el.style.transform = '';
+      const o = '-6px';
+      if (side === 'left') {
+        el.style.left = o; el.style.top = '50%'; el.style.transform = 'translateY(-50%)';
+      } else if (side === 'right') {
+        el.style.right = o; el.style.top = '50%'; el.style.transform = 'translateY(-50%)';
+      } else if (side === 'top') {
+        el.style.top = o; el.style.left = '50%'; el.style.transform = 'translateX(-50%)';
+      } else {
+        el.style.bottom = o; el.style.left = '50%'; el.style.transform = 'translateX(-50%)';
+      }
+    }
+
+    function draw() {
+      syncSvgSize();
+      const lab = winRect(winLab);
+      const ide = winRect(winIde);
+      const sideLab = facingSide(lab, ide);
+      const sideIde = facingSide(ide, lab);
+      placePort(portLab, sideLab);
+      placePort(portIde, sideIde);
+
+      const a = anchor(lab, sideLab);
+      const b = anchor(ide, sideIde);
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const k = Math.max(40, Math.min(120, dist * 0.35));
+      // 控制点沿法线向外，曲线从面对面出去，不穿窗
+      const d = `M ${a.x} ${a.y} C ${a.x + a.nx * k} ${a.y + a.ny * k}, ${b.x + b.nx * k} ${b.y + b.ny * k}, ${b.x} ${b.y}`;
+      link.setAttribute('d', d);
+
+      mid.setAttribute('cx', (a.x + b.x) / 2);
+      mid.setAttribute('cy', (a.y + b.y) / 2);
+
+      labelR.textContent = 'PRD / 指令';
+      labelL.textContent = 'diff / 镜像';
+      labelR.setAttribute('x', a.x + (b.x - a.x) * 0.28);
+      labelR.setAttribute('y', a.y + (b.y - a.y) * 0.28 - 10);
+      labelL.setAttribute('x', a.x + (b.x - a.x) * 0.62);
+      labelL.setAttribute('y', a.y + (b.y - a.y) * 0.62 + 16);
+
+      const vis = showLine ? 'visible' : 'hidden';
+      link.style.visibility = vis;
+      mid.style.visibility = vis;
+      labelR.style.visibility = vis;
+      labelL.style.visibility = vis;
+    }
+
+    function scheduleDraw() {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        draw();
+      });
+    }
+
+    desk.addEventListener('pointerdown', (e) => {
+      const bar = e.target.closest('[data-drag]');
+      if (!bar) return;
+      const win = document.getElementById(bar.getAttribute('data-drag'));
+      const rect = win.getBoundingClientRect();
+      const deskRect = desk.getBoundingClientRect();
+      drag = {
+        win,
+        ox: e.clientX - rect.left,
+        oy: e.clientY - rect.top,
+        deskRect,
+      };
+      win.style.zIndex = '20';
+      win.setPointerCapture?.(e.pointerId);
+    });
+    desk.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const x = e.clientX - drag.deskRect.left - drag.ox;
+      const y = e.clientY - drag.deskRect.top - drag.oy;
+      drag.win.style.left = Math.max(8, x) + 'px';
+      drag.win.style.top = Math.max(8, y) + 'px';
+      scheduleDraw();
+    });
+    desk.addEventListener('pointerup', () => {
+      if (drag) drag.win.style.zIndex = '10';
+      drag = null;
+      draw();
+    });
+    window.addEventListener('resize', scheduleDraw);
+
+    document.getElementById('btnLine').onclick = (e) => {
+      showLine = !showLine;
+      e.target.classList.toggle('on', showLine);
+      e.target.textContent = `显示连线：${showLine ? '开' : '关'}`;
+      draw();
+    };
+
+    requestAnimationFrame(() => {
+      draw();
+      requestAnimationFrame(draw);
+    });
+  </script>
+</body>
+</html>
