@@ -14,11 +14,11 @@ Download the latest build from [Releases](https://github.com/lant1ng-1216/lab-ag
 
 | Platform | Artifact |
 | -------- | -------- |
-| macOS (Apple Silicon) | `Lab-Agent-*-mac-arm64.dmg` |
+| macOS (Apple Silicon) | `Lab-Agent-*-mac-arm64.zip`（解压得 `Lab Agent.app`） |
 | Windows (x64) | `Lab-Agent-*-win-x64.zip` |
 | Linux (x64) | `Lab-Agent-*-linux-x64.tar.gz` |
 
-> macOS: first open may require **Right-click → Open** (unsigned / not notarized in v0.1).  
+> macOS: builds are **ad-hoc deep-signed** (not Apple-notarized). Unzip → drag `Lab Agent.app` to Applications. If Gatekeeper blocks: **Right-click → Open**, or `xattr -cr "/Applications/Lab Agent.app"`.  
 > Windows: unzip and run `Lab Agent.exe`.  
 > Linux: extract the archive and run `lab-agent` (or `Lab Agent`) from the unpacked folder.
 
