@@ -8,11 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lant1ng-1216/lab-agent/releases"><img src="docs/assets/desktop-light.png" alt="Lab Agent desktop — light" width="900" /></a>
-</p>
-
-<p align="center">
-  <img src="docs/assets/desktop-skin.jpg" alt="Lab Agent desktop — Glass skin" width="900" />
+  <a href="https://github.com/lant1ng-1216/lab-agent/releases"><img src="docs/assets/desktop.png" alt="Lab Agent desktop" width="920" /></a>
 </p>
 
 ---
