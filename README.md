@@ -8,6 +8,11 @@
 </p>
 
 <p align="center">
+  <a href="https://www.labagent.online"><strong>www.labagent.online</strong></a><br />
+  Official site · docs · downloads
+</p>
+
+<p align="center">
   <a href="https://github.com/lant1ng-1216/lab-agent/releases"><img src="docs/assets/desktop.png" alt="Lab Agent desktop" width="920" /></a>
 </p>
 
