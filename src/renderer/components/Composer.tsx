@@ -93,7 +93,7 @@ export default function Composer({
   engineKey,
   onEngineChange,
   onEnginePending,
-  customApi = { baseUrl: "", apiKey: "", provider: "unknown", models: [] },
+  customApi = { baseUrl: "", apiKey: "", provider: "unknown", protocol: "anthropic-messages", models: [] },
   onRequestCustomApi,
   workdir = null,
   onNeedWorkdir,

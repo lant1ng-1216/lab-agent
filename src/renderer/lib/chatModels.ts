@@ -1,10 +1,13 @@
 import type { PromptModel } from "../harness/beautiful-ui/PromptBar";
+import type { ApiProtocol } from "@shared/protocol";
 
 export const CUSTOM_API_KEY = "lab.customApi.v1";
 export const CHAT_MODEL_KEY = "lab.chatModel";
 export const FETCHED_MODELS_KEY = "lab.fetchedModels.v1";
 
 export type ProviderId = "deepseek" | "openai" | "anthropic" | "kimi" | "glm" | "unknown";
+export type ApiVerificationState = "unverified" | "checking" | "verified" | "error";
+export type ApiConfigSource = "env" | "user";
 
 export interface FetchedModel {
   id: string;
@@ -18,8 +21,18 @@ export interface CustomApiConfig {
   baseUrl: string;
   apiKey: string;
   provider: ProviderId;
-  /** Last successfully fetched models for this credential */
+  /** Protocol used by the Agent runtime, not merely the /models endpoint. */
+  protocol: ApiProtocol;
+  /** Last fetched models, or an explicitly marked env fallback when verification failed. */
   models: FetchedModel[];
+  /** Whether the current credential was verified against the provider. */
+  verification?: ApiVerificationState;
+  /** Last time the provider returned a usable model list. */
+  verifiedAt?: number;
+  /** Sanitized, user-facing reason for the last failed verification. */
+  lastError?: string;
+  /** Explicitly records whether env bootstrap or the API dialog owns this config. */
+  source?: ApiConfigSource;
 }
 
 /** Built-in vendor endpoints for「添加 API」(OpenAI-compatible /models where possible). */
@@ -31,6 +44,7 @@ export interface ApiProviderPreset {
   /** Empty for custom — user types URL */
   baseUrl: string;
   provider: ProviderId;
+  protocol: ApiProtocol;
   hint?: string;
 }
 
@@ -40,6 +54,7 @@ export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     provider: "deepseek",
+    protocol: "anthropic-messages",
     hint: "推荐 · 填 Key 即可",
   },
   {
@@ -47,12 +62,15 @@ export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     provider: "openai",
+    protocol: "openai-chat",
+    hint: "模型列表可拉取；当前 Lab Coding 引擎暂需 Anthropic Messages 兼容接口",
   },
   {
     id: "anthropic",
     label: "Anthropic",
     baseUrl: "https://api.anthropic.com",
     provider: "anthropic",
+    protocol: "anthropic-messages",
     hint: "官方 API；若拉模型失败可改用兼容网关",
   },
   {
@@ -60,18 +78,23 @@ export const API_PROVIDER_PRESETS: ApiProviderPreset[] = [
     label: "Kimi",
     baseUrl: "https://api.moonshot.cn/v1",
     provider: "kimi",
+    protocol: "openai-chat",
+    hint: "模型列表可拉取；当前 Lab Coding 引擎暂需 Anthropic Messages 兼容接口",
   },
   {
     id: "glm",
     label: "GLM",
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     provider: "glm",
+    protocol: "openai-chat",
+    hint: "模型列表可拉取；当前 Lab Coding 引擎暂需 Anthropic Messages 兼容接口",
   },
   {
     id: "custom",
     label: "自定义",
     baseUrl: "",
     provider: "unknown",
+    protocol: "anthropic-messages",
     hint: "自行填写 Base URL",
   },
 ];
@@ -94,6 +117,13 @@ export function detectProvider(baseUrl: string): ProviderId {
   if (u.includes("moonshot") || u.includes("kimi")) return "kimi";
   if (u.includes("bigmodel") || u.includes("zhipu") || u.includes("glm")) return "glm";
   return "unknown";
+}
+
+/** Current Lab Coding binary speaks Anthropic Messages; custom gateways default to it. */
+export function protocolForProvider(provider: ProviderId): ApiProtocol {
+  return provider === "openai" || provider === "kimi" || provider === "glm"
+    ? "openai-chat"
+    : "anthropic-messages";
 }
 
 export function providerBrand(provider: ProviderId): string | undefined {
@@ -155,11 +185,26 @@ export function loadCustomApi(): CustomApiConfig {
           })
           .filter(Boolean) as FetchedModel[]
       : [];
+    const provider = (d.provider as ProviderId) || detectProvider(baseUrl);
+    const protocol: ApiProtocol =
+      d.protocol === "openai-chat" || d.protocol === "anthropic-messages"
+        ? d.protocol
+        : protocolForProvider(provider);
+    const verification: ApiVerificationState =
+      d.verification === "checking" || d.verification === "verified" || d.verification === "error"
+        ? d.verification
+        : "unverified";
+    const source: ApiConfigSource | undefined = d.source === "env" || d.source === "user" ? d.source : undefined;
     return {
       baseUrl,
       apiKey: typeof d.apiKey === "string" ? d.apiKey : "",
-      provider: (d.provider as ProviderId) || detectProvider(baseUrl),
+      provider,
+      protocol,
       models,
+      verification,
+      verifiedAt: typeof d.verifiedAt === "number" ? d.verifiedAt : undefined,
+      lastError: typeof d.lastError === "string" ? d.lastError : undefined,
+      source,
     };
   } catch {
     return emptyApi();
@@ -172,7 +217,10 @@ function emptyApi(): CustomApiConfig {
     baseUrl: deepseek.baseUrl,
     apiKey: "",
     provider: "deepseek",
+    protocol: "anthropic-messages",
     models: [],
+    verification: "unverified",
+    source: undefined,
   };
 }
 
@@ -197,11 +245,23 @@ export function loadChatModelKey(fallbackModels: FetchedModel[]): string {
  */
 export function buildChatModels(custom: CustomApiConfig): PromptModel[] {
   const brand = providerBrand(custom.provider) || providerBrand(detectProvider(custom.baseUrl));
+  const statusTag =
+    custom.verification === "verified"
+      ? undefined
+      : custom.verification === "error"
+        ? "验证失败"
+        : custom.verification === "checking"
+          ? "验证中"
+          : "未验证";
   const rows: PromptModel[] = custom.models.map((m) => ({
     key: m.id,
     name: prettifyModelId(m.id),
-    tag: m.ownedBy || custom.provider,
+    tag:
+      custom.protocol === "openai-chat"
+        ? "暂不支持"
+        : statusTag || m.ownedBy || custom.provider,
     brand: providerBrand(m.provider) || brand,
+    disabled: custom.protocol === "openai-chat",
   }));
   rows.push({ key: "__add_api__", name: "添加 / 刷新 API…", tag: "配置" });
   return rows;

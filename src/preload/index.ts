@@ -4,9 +4,11 @@ import { IPC, type AgentBridgeEvent, type AgentPromptRequest, type ChatMessage, 
 export type AgentChannel = 'supervisor' | 'coding';
 
 contextBridge.exposeInMainWorld('lab', {
+  platform: process.platform,
   getRole: () => ipcRenderer.invoke(IPC.GET_ROLE) as Promise<string>,
   getSettings: () => ipcRenderer.invoke(IPC.GET_SETTINGS),
-  setApiKey: (key: string) => ipcRenderer.invoke(IPC.SET_API_KEY, key),
+  setApiKey: (key: string, opts?: { baseUrl?: string; model?: string }) =>
+    ipcRenderer.invoke(IPC.SET_API_KEY, { apiKey: key, baseUrl: opts?.baseUrl, model: opts?.model }),
   listModels: (payload: ListModelsRequest) =>
     ipcRenderer.invoke(IPC.LIST_MODELS, payload) as Promise<ListModelsResult>,
   agentPrompt: (payload: AgentPromptRequest) =>

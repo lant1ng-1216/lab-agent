@@ -5,6 +5,7 @@
 
 import type { AgentState } from "../canvas/CanvasFlow";
 import type { LabNodeKind } from "../canvas/LabNode";
+import { redactSensitiveText } from "@shared/protocol";
 
 export type ShellMode = "normal" | "supervisor";
 
@@ -94,6 +95,19 @@ export function sanitizeAgentState(state: AgentState | undefined | null): AgentS
     base.status === "waiting";
   return {
     ...base,
+    messages: (base.messages ?? []).map((message) => {
+      if (
+        message.role !== "assistant" ||
+        !/api[ _-]?key|authorization|authentication|http\s+(?:400|401|403)|invalid[_ ]parameter/i.test(message.content)
+      ) {
+        return message;
+      }
+      return {
+        ...message,
+        content: redactSensitiveText(message.content),
+        error: message.error ?? true,
+      };
+    }),
     tools,
     streaming: null,
     streamComplete: false,

@@ -3,7 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import type { BrowserWindow as BW } from 'electron';
-import { IPC, type AppSettings, type SupervisorCommand, type ChatMessage } from '../shared/protocol';
+import {
+  IPC,
+  type ApiProtocol,
+  type ApiErrorKind,
+  type AppSettings,
+  type SupervisorCommand,
+  type ChatMessage,
+  type ListModelsRequest,
+  type ListModelsResult,
+  redactSensitiveText,
+} from '../shared/protocol';
 import { ContextStore } from '../agent/context/store';
 import { DeepSeekProvider } from '../agent/providers/deepseek';
 import { SupervisorLoop } from '../agent/loops/supervisor-loop';
@@ -72,6 +82,18 @@ function applyDockIcon(iconPath: string | undefined) {
 function resolveNodeBinary(): string {
   if (process.env.NODE && fs.existsSync(process.env.NODE)) return process.env.NODE;
 
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('where.exe', ['node.exe'], {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 3000,
+      }).trim().split(/\r?\n/)[0];
+      if (out && fs.existsSync(out)) return out;
+    } catch { /* ignore — PATH may not contain Node */ }
+    return 'node.exe';
+  }
+
   const home = os.homedir();
   const candidates = [
     path.join(home, '.local/bin/node'),
@@ -101,6 +123,24 @@ function resolveNodeBinary(): string {
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function windowsQuote(s: string): string {
+  return `"${s.replace(/"/g, '\\"')}"`;
+}
+
+function resolveInteractiveShell(): string {
+  if (process.platform === 'win32') {
+    const configured = process.env.LAB_AGENT_SHELL || process.env.ComSpec || process.env.COMSPEC;
+    return configured && fs.existsSync(configured) ? configured : 'cmd.exe';
+  }
+  return fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash';
+}
+
+function resolveBundledLabCodingBinary(): string | undefined {
+  const root = resolveLabCodingRoot();
+  const names = process.platform === 'win32' ? ['cli-dev.exe', 'cli-dev'] : ['cli-dev', 'cli-dev.exe'];
+  return names.map((name) => path.join(root, name)).find((candidate) => fs.existsSync(candidate));
 }
 
 function enrichedPtyEnv(): Record<string, string> {
@@ -137,7 +177,7 @@ let mainWin: BW | null = null;
 const store = new ContextStore();
 let settings: AppSettings = {
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
-  model: 'deepseek-chat',
+  model: 'deepseek-flash',
   workspacePath: '',
   apiBaseUrl: '',
 };
@@ -189,6 +229,29 @@ function toOpenAiBase(anthropicOrOpenAiBase: string): string {
   return base || 'https://api.deepseek.com';
 }
 
+function classifyApiError(status?: number): ApiErrorKind {
+  if (status === 401) return 'auth';
+  if (status === 403) return 'forbidden';
+  if (status === 400 || status === 422) return 'invalid-request';
+  if (status === 404) return 'not-found';
+  if (status === 429) return 'rate-limit';
+  if (typeof status === 'number' && status >= 500) return 'server';
+  return 'unknown';
+}
+
+function safeApiEndpoint(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return redactSensitiveText(value).replace(/[?#].*$/, '').slice(0, 180);
+  }
+}
+
 function applyLabAgentEnv() {
   const root = resolveLabCodingRoot();
   const env = {
@@ -207,12 +270,14 @@ function applyLabAgentEnv() {
   }
   const model = env.MODEL || env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   if (model) settings.model = model;
-  const rawBase = env.BASE_URL || env.ANTHROPIC_BASE_URL || '';
+  // Prefer the newer Anthropic-compatible value when both legacy and current
+  // variables exist; otherwise an old BASE_URL can override the UI/runtime.
+  const rawBase = env.ANTHROPIC_BASE_URL || env.BASE_URL || '';
   settings.apiBaseUrl = toOpenAiBase(rawBase || 'https://api.deepseek.com');
 }
 
 function makeProvider() {
-  return new DeepSeekProvider(settings.deepseekApiKey, settings.model);
+  return new DeepSeekProvider(settings.deepseekApiKey, settings.model, settings.apiBaseUrl || 'https://api.deepseek.com');
 }
 
 let supervisorLoop: SupervisorLoop;
@@ -256,6 +321,25 @@ function createMainWindow() {
   const width = Math.max(1100, Math.round(aw * 0.88));
   const height = Math.max(720, Math.round(ah * 0.88));
   const icon = resolveAppIcon();
+  const chromeOptions =
+    process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 16 },
+        }
+      : process.platform === 'win32'
+        ? {
+            titleBarStyle: 'hidden' as const,
+            titleBarOverlay: {
+              color: '#f7f7f8',
+              symbolColor: '#4b4b52',
+              height: 44,
+            },
+            autoHideMenuBar: true,
+          }
+        : {
+            titleBarStyle: 'hidden' as const,
+          };
   mainWin = new BrowserWindow({
     width,
     height,
@@ -263,8 +347,7 @@ function createMainWindow() {
     minHeight: 600,
     title: 'Lab Agent',
     backgroundColor: '#0f1012',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 16 },
+    ...chromeOptions,
     ...(icon ? { icon } : {}),
     webPreferences: {
       preload: preloadPath(),
@@ -314,27 +397,51 @@ function registerIpc() {
     };
   });
 
-  ipcMain.handle(IPC.SET_API_KEY, (_e, key: string) => {
+  ipcMain.handle(IPC.SET_API_KEY, (_e, payload: string | { apiKey?: string; baseUrl?: string; model?: string }) => {
+    const key = typeof payload === 'string' ? payload : payload?.apiKey || '';
     settings.deepseekApiKey = key.trim();
+    if (typeof payload !== 'string') {
+      if (payload.baseUrl?.trim()) settings.apiBaseUrl = toOpenAiBase(payload.baseUrl);
+      if (payload.model?.trim()) settings.model = payload.model.trim();
+    }
     wireLoops();
     return true;
   });
 
-  ipcMain.handle(IPC.LIST_MODELS, async (_e, payload: { baseUrl?: string; apiKey?: string }) => {
-    const baseUrl = String(payload?.baseUrl || '').trim().replace(/\/+$/, '');
-    const apiKey = String(payload?.apiKey || '').trim();
-    if (!baseUrl) return { ok: false, error: '请填写 Base URL' };
-    if (!apiKey) return { ok: false, error: '请填写 API Key' };
+  const modelFetches = new Map<string, Promise<ListModelsResult>>();
 
-    const candidates: string[] = [];
-    if (/\/models$/i.test(baseUrl)) candidates.push(baseUrl);
-    else if (/\/v1$/i.test(baseUrl)) candidates.push(`${baseUrl}/models`);
-    else {
-      candidates.push(`${baseUrl}/models`, `${baseUrl}/v1/models`);
+  const inferApiProtocol = (baseUrl: string): ApiProtocol => {
+    const value = baseUrl.toLowerCase();
+    return value.includes('openai.com') || value.includes('moonshot') || value.includes('bigmodel')
+      ? 'openai-chat'
+      : 'anthropic-messages';
+  };
+
+  const modelEndpointCandidates = (baseUrl: string): string[] => {
+    const raw = baseUrl.trim().replace(/\/+$/, '');
+    if (!raw) return [];
+    if (/\/models$/i.test(raw)) return [raw];
+    const withoutAnthropic = raw.replace(/\/anthropic$/i, '');
+    const candidates = new Set<string>();
+    if (/\/v1$/i.test(withoutAnthropic)) {
+      candidates.add(`${withoutAnthropic}/models`);
+    } else {
+      candidates.add(`${withoutAnthropic}/models`);
+      candidates.add(`${withoutAnthropic}/v1/models`);
     }
+    if (withoutAnthropic !== raw) candidates.add(`${raw}/models`);
+    return [...candidates];
+  };
 
+  const fetchModels = async (baseUrl: string, apiKey: string): Promise<ListModelsResult> => {
+    const candidates = modelEndpointCandidates(baseUrl);
+    if (!candidates.length) return { ok: false, error: '请填写 Base URL' };
     let lastErr = '无法拉取模型列表';
+    let lastKind: ApiErrorKind = 'unknown';
+    let lastStatus: number | undefined;
     for (const endpoint of candidates) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
       try {
         const res = await fetch(endpoint, {
           method: 'GET',
@@ -342,27 +449,65 @@ function registerIpc() {
             Authorization: `Bearer ${apiKey}`,
             Accept: 'application/json',
           },
+          signal: controller.signal,
         });
+        const body = await res.text();
         if (!res.ok) {
-          lastErr = `HTTP ${res.status} @ ${endpoint}`;
+          lastStatus = res.status;
+          lastKind = classifyApiError(res.status);
+          const detail = redactSensitiveText(body).slice(0, 240);
+          lastErr = `HTTP ${res.status} @ ${safeApiEndpoint(endpoint)}${detail ? `：${detail}` : ''}`;
           continue;
         }
-        const json = (await res.json()) as { data?: { id?: string; owned_by?: string }[] };
+        let json: { data?: { id?: string; owned_by?: string }[] };
+        try {
+          json = JSON.parse(body) as { data?: { id?: string; owned_by?: string }[] };
+        } catch {
+          lastKind = 'invalid-request';
+          lastErr = `端点返回的不是 JSON：${safeApiEndpoint(endpoint)}`;
+          continue;
+        }
         const models = Array.isArray(json?.data)
           ? json.data
               .filter((m) => m && typeof m.id === 'string' && m.id.trim())
               .map((m) => ({ id: String(m.id).trim(), owned_by: m.owned_by }))
           : [];
         if (!models.length) {
-          lastErr = `端点可用但未返回模型：${endpoint}`;
+          lastKind = 'invalid-request';
+          lastErr = `端点可用但未返回模型：${safeApiEndpoint(endpoint)}`;
           continue;
         }
-        return { ok: true, models, endpoint };
+        return { ok: true, models, endpoint: safeApiEndpoint(endpoint) };
       } catch (err) {
-        lastErr = err instanceof Error ? err.message : String(err);
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          lastKind = 'timeout';
+          lastErr = `请求超时（15 秒）：${safeApiEndpoint(endpoint)}`;
+        } else if (err instanceof TypeError) {
+          lastKind = 'network';
+          lastErr = `网络连接失败：${safeApiEndpoint(endpoint)}`;
+        } else {
+          lastKind = 'unknown';
+          lastErr = redactSensitiveText(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        clearTimeout(timer);
       }
     }
-    return { ok: false, error: lastErr };
+    return { ok: false, error: lastErr, errorKind: lastKind, status: lastStatus };
+  };
+
+  ipcMain.handle(IPC.LIST_MODELS, async (_e, payload: ListModelsRequest) => {
+    const baseUrl = String(payload?.baseUrl || '').trim().replace(/\/+$/, '');
+    const apiKey = String(payload?.apiKey || '').trim();
+    if (!baseUrl) return { ok: false, error: '请填写 Base URL' };
+    if (!apiKey) return { ok: false, error: '请填写 API Key' };
+    const protocol = payload?.protocol || inferApiProtocol(baseUrl);
+    const requestKey = `${protocol}\u0000${baseUrl}\u0000${apiKey}`;
+    const pending = modelFetches.get(requestKey);
+    if (pending) return pending;
+    const request = fetchModels(baseUrl, apiKey).finally(() => modelFetches.delete(requestKey));
+    modelFetches.set(requestKey, request);
+    return request;
   });
 
   ipcMain.handle(IPC.AGENT_PROMPT, async (_e, payload: {
@@ -376,11 +521,19 @@ function registerIpc() {
     permissionMode?: string;
     apiKey?: string;
     baseUrl?: string;
+    protocol?: ApiProtocol;
   }) => {
     const sessionKey = String(payload?.sessionKey || '').trim();
     const cwd = String(payload?.cwd || '').trim();
     const prompt = String(payload?.prompt || '').trim();
     if (!sessionKey || !cwd || !prompt) return { ok: false, error: 'missing sessionKey/cwd/prompt' };
+    const protocol = payload?.protocol || inferApiProtocol(String(payload?.baseUrl || ''));
+    if (protocol === 'openai-chat') {
+      return {
+        ok: false,
+        error: '当前 Lab Coding 引擎使用 Anthropic Messages 协议，请改用 DeepSeek/Anthropic 或 Anthropic 兼容网关。OpenAI Chat Completions 适配尚未接入。',
+      };
+    }
     await labCodingBridge.prompt({
       sessionKey,
       cwd,
@@ -396,6 +549,7 @@ function registerIpc() {
       permissionMode: payload?.permissionMode,
       apiKey: payload?.apiKey || settings.deepseekApiKey || undefined,
       baseUrl: payload?.baseUrl,
+      protocol,
     });
     return { ok: true };
   });
@@ -534,22 +688,31 @@ function registerIpc() {
 
   const engineCmd = (engine: string): { cmd: string; args: string[] } => {
     const e = engine.toLowerCase();
-    const shell = fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash';
+    const shell = resolveInteractiveShell();
+    const isWindows = process.platform === 'win32';
 
     // Lab supervisor terminal = interactive login shell
     if (e === 'shell' || e === 'lab' || e === 'supervisor') {
-      return { cmd: shell, args: ['-il'] };
+      return isWindows ? { cmd: shell, args: [] } : { cmd: shell, args: ['-il'] };
     }
 
     if (e === 'lab-deepseek' || e.includes('deepseek') || e === 'lab-coding') {
+      const bundled = resolveBundledLabCodingBinary();
+      if (bundled) return { cmd: bundled, args: [] };
       const script = path.join(__dirname, 'lab-coding', 'index.js');
       const node = resolveNodeBinary();
       // Login shell so PATH matches Terminal.app (Electron GUI PATH is often empty)
-      return { cmd: shell, args: ['-lc', `${shellQuote(node)} ${shellQuote(script)}`] };
+      return isWindows
+        ? { cmd: shell, args: ['/d', '/s', '/c', `${windowsQuote(node)} ${windowsQuote(script)}`] }
+        : { cmd: shell, args: ['-lc', `${shellQuote(node)} ${shellQuote(script)}`] };
     }
-    if (e.includes('claude')) return { cmd: shell, args: ['-lc', 'claude'] };
-    if (e.includes('codex')) return { cmd: shell, args: ['-lc', 'codex'] };
-    return { cmd: shell, args: ['-il'] };
+    if (e.includes('claude')) {
+      return isWindows ? { cmd: shell, args: ['/d', '/s', '/c', 'claude'] } : { cmd: shell, args: ['-lc', 'claude'] };
+    }
+    if (e.includes('codex')) {
+      return isWindows ? { cmd: shell, args: ['/d', '/s', '/c', 'codex'] } : { cmd: shell, args: ['-lc', 'codex'] };
+    }
+    return isWindows ? { cmd: shell, args: [] } : { cmd: shell, args: ['-il'] };
   };
 
   ipcMain.handle(IPC.PTY_SPAWN, (_e, payload: { id: string; engine: string; cols: number; rows: number }) => {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChatMessage, CodingMirrorEvent, LoopStatus, SupervisorCommand, AgentToolTrace } from "@shared/protocol";
+import { redactSensitiveText, type ChatMessage, type CodingMirrorEvent, type LoopStatus, type SupervisorCommand, type AgentToolTrace } from "@shared/protocol";
 import CanvasFlow, { type AgentState } from "./canvas/CanvasFlow";
 import type { LabNodeKind } from "./canvas/LabNode";
 import FileTree from "./components/FileTree";
@@ -48,10 +48,12 @@ import {
   loadChatModelKey,
   loadCustomApi,
   mapModelsResponse,
+  protocolForProvider,
   presetForBaseUrl,
   prettifyModelId,
   saveCustomApi,
   type ApiProviderPresetId,
+  type ApiVerificationState,
   type CustomApiConfig,
 } from "./lib/chatModels";
 import {
@@ -60,7 +62,7 @@ import {
   type PermissionModeId,
 } from "./lib/permissionModes";
 import PermissionModal, { type PermissionAction } from "./components/PermissionModal";
-import labAgentIcon from "./assets/brands/labagent-icon.png";
+import labAppIcon from "../../build/icon.png";
 import StreamingText from "./harness/beautiful-ui/StreamingText";
 import LoadingState from "./harness/beautiful-ui/LoadingState";
 import { ApprovalPanel, AssistantBlock, ToolRow, UserBubble } from "@harness";
@@ -85,7 +87,13 @@ const DEFAULT_AVATAR_SEED = "lab-guest";
 function loadShellMode(): ShellMode {
   try {
     const v = localStorage.getItem(SHELL_MODE_KEY);
-    if (v === "normal" || v === "supervisor") return v;
+    if (v === "supervisor") {
+      // The supervisor shell is still being built. Migrate old installs back
+      // to the only public mode instead of reopening an unfinished workspace.
+      localStorage.setItem(SHELL_MODE_KEY, "normal");
+      return "normal";
+    }
+    if (v === "normal") return v;
   } catch {}
   return "normal";
 }
@@ -159,6 +167,84 @@ function makeExperiment(n: number, engine: string, shellMode: ShellMode = "super
   };
 }
 
+function apiVerificationLabel(state?: ApiVerificationState): string {
+  switch (state) {
+    case "verified":
+      return "已验证";
+    case "checking":
+      return "验证中";
+    case "error":
+      return "验证失败";
+    default:
+      return "未验证";
+  }
+}
+
+function isCredentialFailure(event: { kind: string; text?: string; isError?: boolean }): boolean {
+  if (event.kind === "result" && !event.isError) return false;
+  return /\b401\b|unauthorized|authentication fails|invalid (?:api )?key|api key.*invalid/i.test(event.text || "");
+}
+
+function apiErrorSummary(kind?: string, detail?: string): string {
+  const title =
+    kind === "auth"
+      ? "API Key 无效或已过期"
+      : kind === "forbidden"
+        ? "当前账号无权访问"
+        : kind === "invalid-request"
+          ? "请求格式或协议不兼容"
+          : kind === "not-found"
+            ? "接口或模型不存在"
+            : kind === "rate-limit"
+              ? "请求过于频繁"
+              : kind === "timeout"
+                ? "请求超时"
+                : kind === "network"
+                  ? "网络连接失败"
+                  : "API 验证失败";
+  const safeDetail = detail ? redactSensitiveText(detail) : "";
+  return safeDetail ? title + "：" + safeDetail : title;
+}
+
+function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3.5" y="4" width="17" height="16" rx="3" />
+      <path d="M9 4v16" />
+      {collapsed ? <path d="m14 9 3 3-3 3" /> : <path d="m7 9-3 3 3 3" />}
+    </svg>
+  );
+}
+
+function NewChatGlyph() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [appearance, setAppearance] = useState<AppearanceState>(() => loadAppearance());
   const theme = appearance.mode;
@@ -189,12 +275,14 @@ export default function App() {
     presetForBaseUrl(loadCustomApi().baseUrl),
   );
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [apiCheckError, setApiCheckError] = useState<string | null>(null);
 
   const initialMode = useRef(loadShellMode());
   const persisted = useRef(loadSessionBucket(initialMode.current));
   const [experiments, setExperiments] = useState<Experiment[]>(persisted.current.experiments);
   const [activeExp, setActiveExp] = useState<string | null>(persisted.current.activeId);
   const isNormal = shellMode === "normal";
+  const isMacPlatform = window.lab?.platform === "darwin";
 
   const [target, setTarget] = useState<LabNodeKind>("lab");
   const [inspector, setInspector] = useState<LabNodeKind | null>(null);
@@ -289,42 +377,73 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once on bridge ready
   }, [desktopReady]);
 
-  // Seed shell Custom API from agents/lab-coding/lab-agent.env (once).
+  // Bootstrap the API config once. An explicit config saved through the API
+  // dialog wins; legacy localStorage without a source is intentionally
+  // re-validated against lab-agent.env so stale keys cannot shadow the env key.
   useEffect(() => {
     if (!desktopReady || !window.lab?.getLabEnv) return;
     let cancelled = false;
     void (async () => {
       const existing = loadCustomApi();
       const env = await window.lab.getLabEnv();
-      if (cancelled || !env.ok || !env.apiKey) return;
+      if (cancelled) return;
 
-      const baseUrl = (existing.baseUrl || env.baseUrl || "https://api.deepseek.com").replace(/\/+$/, "");
-      const apiKey = existing.apiKey || env.apiKey;
-      const provider = detectProvider(baseUrl);
-      let models = existing.models;
+      const envKey = env.ok ? env.apiKey.trim() : "";
+      const useEnv = Boolean(envKey) && existing.source !== "user";
+      const baseUrl = (useEnv ? env.baseUrl : existing.baseUrl || env.baseUrl || "https://api.deepseek.com")
+        .trim()
+        .replace(/\/+$/, "");
+      const apiKey = useEnv ? envKey : existing.apiKey.trim();
+      if (!apiKey) return;
+      const provider = useEnv ? detectProvider(baseUrl) : existing.provider || detectProvider(baseUrl);
+      const protocol = useEnv ? protocolForProvider(provider) : existing.protocol || protocolForProvider(provider);
+      let models = useEnv ? [] : existing.models;
+      let verification: ApiVerificationState = "unverified";
+      let lastError: string | undefined;
+      let verifiedAt: number | undefined;
 
       if (!models.length && env.model) {
         models = [{ id: env.model, name: prettifyModelId(env.model), provider }];
       }
 
       try {
-        const res = await window.lab.listModels({ baseUrl, apiKey });
+        const res = await window.lab.listModels({ baseUrl, apiKey, protocol });
         if (res.ok && res.models?.length) {
           models = mapModelsResponse({ data: res.models }, provider);
+          verification = "verified";
+          verifiedAt = Date.now();
+        } else {
+          verification = "error";
+          lastError = apiErrorSummary(res.errorKind, res.error);
         }
-      } catch {
-        /* keep env model fallback */
+      } catch (err) {
+        verification = "error";
+        lastError = redactSensitiveText(err instanceof Error ? err.message : String(err));
       }
 
       if (cancelled) return;
-      const next: CustomApiConfig = { baseUrl, apiKey, provider, models };
+      const next: CustomApiConfig = {
+        baseUrl,
+        apiKey,
+        provider,
+        protocol,
+        models,
+        verification,
+        verifiedAt,
+        lastError,
+        source: useEnv ? "env" : existing.source || "user",
+      };
       saveCustomApi(next);
       setCustomApi(next);
       setCustomApiDraft(next);
-      void window.lab.setApiKey(apiKey);
-      const preferred = loadChatModelKey(models) || env.model || models[0]?.id || "";
+      const preferred = loadChatModelKey(models) || (useEnv ? env.model : "") || models[0]?.id || "";
+      void window.lab.setApiKey(apiKey, { baseUrl, model: preferred || undefined });
       if (preferred) setChatModel(preferred);
-      if (!existing.apiKey) showToast("已从 lab-agent.env 载入 API");
+      if (verification === "error") {
+        showToast("API 未通过验证，请检查 Key、Base URL 或协议");
+      } else if (useEnv) {
+        showToast("已从 lab-agent.env 载入并验证 API");
+      }
     })();
     return () => {
       cancelled = true;
@@ -350,23 +469,17 @@ export default function App() {
     }, 3800);
   }, []);
 
-  const pushModeNotice = useCallback((mode: ShellMode) => {
-    const id = `n-mode-${Date.now()}`;
-    const item =
-      mode === "normal"
-        ? {
-            id,
-            title: "Lab Agent",
-            body: "已切换到常规态 · 单 Agent 工作台",
-            brand: "lab-coding",
-          }
-        : {
-            id,
-            title: "监工态",
-            body: "概念预览 · 暂不可用 — 双 Agent 工作台形态展示中，正式能力后续开放。",
-            brand: "lab-coding",
-          };
-    setNotices((xs) => [...xs.slice(-3), item]);
+  const pushSupervisorSoonNotice = useCallback(() => {
+    const id = `n-mode-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setNotices((xs) => [
+      ...xs.slice(-3),
+      {
+        id,
+        title: "监工版即将上线",
+        body: "双 Agent 工作台仍在打磨中，当前不会切换或影响现有对话。",
+        brand: "lab-coding",
+      },
+    ]);
     window.setTimeout(() => {
       setNotices((xs) => xs.filter((n) => n.id !== id));
     }, 3800);
@@ -401,24 +514,6 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_KEY, chatModel); } catch {} }, [chatModel]);
   useEffect(() => { savePermissionMode(permissionMode); }, [permissionMode]);
 
-  const toggleShellMode = () => {
-    const next: ShellMode = shellMode === "normal" ? "supervisor" : "normal";
-    if (shellMode === "normal" && activeExp) {
-      void window.lab?.agentCancel(activeExp);
-    }
-    // Flush current bucket, then load the other — sessions never mix.
-    saveSessionBucket(shellMode, { experiments, activeId: activeExp });
-    const other = loadSessionBucket(next);
-    setExperiments(other.experiments);
-    setActiveExp(other.activeId);
-    setInspector(null);
-    setTarget(next === "normal" ? "coding" : "lab");
-    setDeleteConfirm(null);
-    setRenaming(null);
-    setShellMode(next);
-    pushModeNotice(next);
-  };
-
   // persist experiments into the active mode bucket only (debounced)
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -442,18 +537,23 @@ export default function App() {
     const offChat = bridge.onChatStream((agent, msg) => {
       const kind: LabNodeKind = agent === "supervisor" ? "lab" : "coding";
       if (msg.role === "user") return;
+      const safeMsg = {
+        ...msg,
+        content: redactSensitiveText(msg.content),
+        error: msg.error || /api[ _-]?key|authorization|authentication|http\s+(?:400|401|403)/i.test(msg.content),
+      };
       const set = kind === "lab" ? setLab : setCoding;
-      set((s) => ({ ...s, streaming: msg, status: "streaming" }));
+      set((s) => ({ ...s, streaming: safeMsg, status: "streaming" }));
       setTimeout(() => {
         set((s) => {
-          if (!s.streaming || s.streaming.id !== msg.id) return s;
-          const isApproval = /确认|PRD|验收|打回|偏离|派发/.test(msg.content);
+          if (!s.streaming || s.streaming.id !== safeMsg.id) return s;
+          const isApproval = /确认|PRD|验收|打回|偏离|派发/.test(safeMsg.content);
           return {
             ...s,
             streaming: null,
-            messages: [...s.messages, msg],
+            messages: [...s.messages, safeMsg],
             status: "idle",
-            approval: kind === "lab" && isApproval ? { headline: "确认后派发 Coding", detail: msg.content.slice(0, 320) } : s.approval,
+            approval: kind === "lab" && isApproval ? { headline: "确认后派发 Coding", detail: safeMsg.content.slice(0, 320) } : s.approval,
           };
         });
       }, 650);
@@ -472,6 +572,17 @@ export default function App() {
     });
 
     const offAgent = bridge.onAgentEvent?.((sessionKey, event) => {
+      if (isCredentialFailure(event)) {
+        setCustomApi((current) => {
+          const next: CustomApiConfig = {
+            ...current,
+            verification: "error",
+            lastError: "API 验证失败：Key 无效、已过期或当前账号无权访问该模型",
+          };
+          saveCustomApi(next);
+          return next;
+        });
+      }
       setExperiments((xs) =>
         xs.map((e) => {
           if (e.id !== sessionKey) return e;
@@ -800,6 +911,10 @@ export default function App() {
       showToast("请先选择或添加工作区");
       return;
     }
+    if (customApi.protocol === "openai-chat") {
+      showToast("当前 Lab Coding 引擎暂不支持 OpenAI Chat，请改用 Anthropic Messages 兼容接口");
+      return;
+    }
 
     let existing = activeExp ? experiments.find((e) => e.id === activeExp) : null;
     // Plan A: never send under a foreign session cwd — open/create in active workspace
@@ -883,42 +998,56 @@ export default function App() {
     draftHistory.current.unshift(payload);
     const model = chatModel && chatModel !== "__add_api__" ? chatModel : undefined;
 
+    const failAgent = (message: string) => {
+      const safeMessage = redactSensitiveText(message);
+      showToast(safeMessage);
+      setExperiments((xs) =>
+        xs.map((e) =>
+          e.id === expId
+            ? {
+                ...e,
+                coding: applyAgentEvent(e.coding, { kind: "error", text: safeMessage }),
+              }
+            : e,
+        ),
+      );
+    };
+
     void (async () => {
-      // Soft stop live process so spawn can apply --resume-session-at; never purge on edit
-      if (truncating && expId) {
-        await window.lab?.agentCancel(expId, {
+      try {
+        if (!window.lab?.agentPrompt) {
+          failAgent("桌面引擎未连接，请重启桌面端后重试");
+          return;
+        }
+        // Soft stop live process so spawn can apply --resume-session-at; never purge on edit
+        if (truncating && expId) {
+          await window.lab.agentCancel(expId, {
+            cwd: workdir,
+            sessionId: prevSessionId,
+            purge: false,
+          });
+          patchExp(expId, { engineResumeAt: null, engineCutBefore: null });
+        } else if (expId && (existing?.engineResumeAt || existing?.engineCutBefore)) {
+          patchExp(expId, { engineResumeAt: null, engineCutBefore: null });
+        }
+        const res = await window.lab.agentPrompt({
+          sessionKey: expId!,
           cwd: workdir,
+          prompt: payload,
           sessionId: prevSessionId,
-          purge: false,
+          resumeSessionAt,
+          cutBeforeUserText,
+          model,
+          permissionMode,
+          apiKey: customApi.apiKey || undefined,
+          baseUrl: customApi.baseUrl || undefined,
+          protocol: customApi.protocol,
         });
-        patchExp(expId, { engineResumeAt: null, engineCutBefore: null });
-      } else if (expId && (existing?.engineResumeAt || existing?.engineCutBefore)) {
-        patchExp(expId, { engineResumeAt: null, engineCutBefore: null });
-      }
-      const res = await window.lab?.agentPrompt({
-        sessionKey: expId!,
-        cwd: workdir,
-        prompt: payload,
-        sessionId: prevSessionId,
-        resumeSessionAt,
-        cutBeforeUserText,
-        model,
-        permissionMode,
-        apiKey: customApi.apiKey || undefined,
-        baseUrl: customApi.baseUrl || undefined,
-      });
-      if (res && !res.ok) {
-        showToast(res.error || "Agent 启动失败");
-        setExperiments((xs) =>
-          xs.map((e) =>
-            e.id === expId
-              ? {
-                  ...e,
-                  coding: applyAgentEvent(e.coding, { kind: "error", text: res.error || "Agent 启动失败" }),
-                }
-              : e,
-          ),
-        );
+        if (!res.ok) {
+          failAgent(res.error || "Agent 启动失败");
+        }
+      } catch (err) {
+        failAgent(err instanceof Error ? err.message : "Agent 请求失败，请重试");
       }
     })();
   };
@@ -1084,7 +1213,15 @@ export default function App() {
   const mainColRef = useRef<HTMLElement | null>(null);
 
   return (
-    <div className="lab-root relative flex h-full">
+    <div
+      className={`lab-root relative flex h-full flex-col overflow-hidden ${
+        window.lab?.platform === "win32"
+          ? "lab-platform-windows"
+          : window.lab?.platform === "darwin"
+            ? "lab-platform-macos"
+            : "lab-platform-other"
+      }`}
+    >
       {skinOn ? (
         <Suspense fallback={null}>
           <SkinAtmosphere
@@ -1095,58 +1232,89 @@ export default function App() {
         </Suspense>
       ) : null}
 
-      {/* ============ Left sidebar ============ */}
+      {/* One shared window chrome row keeps macOS controls and the content header aligned. */}
+      <div
+        className={`titlebar-drag relative z-[4] flex h-11 shrink-0 items-center border-b border-[var(--lab-border-soft)] ${
+          skinOn ? "lab-skin-glass" : ""
+        }`}
+        style={{
+          background: skinOn
+            ? "color-mix(in srgb, var(--lab-surface-solid) 72%, transparent)"
+            : "var(--lab-main)",
+        }}
+      >
+        <div className={`flex min-w-0 flex-1 items-center gap-1.5 pr-3 ${isMacPlatform ? "pl-[78px]" : "pl-2"}`}>
+          <button
+            type="button"
+            className="titlebar-no-drag flex size-8 shrink-0 items-center justify-center rounded-[9px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          >
+            <SidebarToggleGlyph collapsed={sidebarCollapsed} />
+          </button>
+          <button
+            type="button"
+            className="titlebar-no-drag flex size-8 shrink-0 items-center justify-center rounded-[9px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+            onClick={startNewChat}
+            title="新对话"
+            aria-label="新对话"
+          >
+            <NewChatGlyph />
+          </button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-[var(--lab-border)]" aria-hidden />
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px]">
+            <span className="shrink-0 text-[var(--lab-ink-3)]">{isNormal ? "对话" : "实验"}</span>
+            <span className="shrink-0 text-[var(--lab-ink-3)]">/</span>
+            <span className="truncate font-medium text-[var(--lab-ink)]">
+              {exp?.name ?? (isNormal ? "新对话" : "新实验")}
+            </span>
+            {activeWorkspace ? (
+              <span
+                className="ml-1 truncate font-[var(--lab-mono)] text-[11px] text-[var(--lab-ink-3)]"
+                title={activeWorkspace}
+              >
+                {activeWorkspace.split(/[/\\]/).filter(Boolean).pop()}
+              </span>
+            ) : null}
+            {isNormal ? (
+              <SectionTokenMeter
+                totals={exp?.tokenTotals}
+                lastUsage={exp?.lastTurnUsage}
+                modelId={chatModel}
+                compactHint={
+                  coding.statusLabel && /压缩/.test(coding.statusLabel) ? coding.statusLabel : null
+                }
+                variant="titlebar"
+              />
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="relative z-[1] flex min-h-0 min-w-0 flex-1">
+        {/* ============ Left sidebar ============ */}
       <aside
         className={`titlebar-drag relative z-[1] flex shrink-0 flex-col border-r border-[var(--lab-border-soft)] bg-[var(--lab-sidebar)] ${
           skinOn ? "lab-skin-glass" : ""
         }`}
         style={{ width: sidebarCollapsed ? SIDEBAR_RAIL : sidebarW, transition: sidebarCollapsed ? "width 0.18s ease" : undefined }}
       >
-        <div
-          className={`flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--lab-border-soft)] ${
-            sidebarCollapsed ? "justify-center px-1" : "gap-2 pl-[78px] pr-3"
-          }`}
-        >
-          {sidebarCollapsed ? (
-            <button
-              type="button"
-              className="titlebar-no-drag flex size-8 items-center justify-center rounded-md text-[13px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-              onClick={() => setSidebarCollapsed(false)}
-              title="展开侧栏"
-              aria-label="展开侧栏"
-            >
-              »
-            </button>
-          ) : (
-            <>
+        {!sidebarCollapsed ? (
+          <div className="shrink-0 border-b border-[var(--lab-border-soft)]">
+            <div className="flex h-[52px] items-center gap-2 px-3">
               <img
-                src={labAgentIcon}
-                alt=""
-                width={20}
-                height={20}
+                src={labAppIcon}
+                alt="Lab Agent"
+                width={27}
+                height={27}
                 draggable={false}
-                className="size-5 shrink-0 rounded-[4px]"
-                style={{ imageRendering: "pixelated" }}
+                className="size-[27px] shrink-0 rounded-[7px] object-contain"
               />
-              <ShellModeToggle mode={shellMode} onToggle={toggleShellMode} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[12.5px] font-semibold text-[var(--lab-ink)]">Lab Agent</div>
-                <div className="truncate text-[10px] text-[var(--lab-ink-3)]">
-                  {isNormal ? "Lab Coding" : "双 Agent · 概念预览"}
-                </div>
-              </div>
-              <button
-                type="button"
-                className="titlebar-no-drag shrink-0 rounded-md px-1.5 py-1 text-[11px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-                onClick={() => setSidebarCollapsed(true)}
-                title="收起"
-                aria-label="收起侧栏"
-              >
-                «
-              </button>
-            </>
-          )}
-        </div>
+              <ShellModeToggle mode={shellMode} onToggle={pushSupervisorSoonNotice} />
+            </div>
+          </div>
+        ) : null}
 
         <div className="titlebar-no-drag min-h-0 flex-1 overflow-y-auto px-2 py-2.5">
           {/* session / experiment list */}
@@ -1309,45 +1477,6 @@ export default function App() {
         }`}
       >
         <div className="relative z-[1] flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* title bar: breadcrumb */}
-          <div
-            className={`titlebar-drag flex h-11 items-center justify-between border-b border-[var(--lab-border-soft)] px-4 ${
-              skinOn ? "lab-skin-glass" : ""
-            }`}
-            style={{
-              background: skinOn
-                ? "color-mix(in srgb, var(--lab-surface-solid) 72%, transparent)"
-                : "var(--lab-main)",
-            }}
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px]">
-              <span className="text-[var(--lab-ink-3)]">{isNormal ? "对话" : "实验"}</span>
-              <span className="text-[var(--lab-ink-3)]">/</span>
-              <span className="truncate font-medium text-[var(--lab-ink)]">
-                {exp?.name ?? (isNormal ? "新对话" : "新实验")}
-              </span>
-              {activeWorkspace ? (
-                <span
-                  className="ml-1 truncate font-[var(--lab-mono)] text-[11px] text-[var(--lab-ink-3)]"
-                  title={activeWorkspace}
-                >
-                  {activeWorkspace.split(/[/\\]/).filter(Boolean).pop()}
-                </span>
-              ) : null}
-              {isNormal ? (
-                <SectionTokenMeter
-                  totals={exp?.tokenTotals}
-                  lastUsage={exp?.lastTurnUsage}
-                  modelId={chatModel}
-                  compactHint={
-                    coding.statusLabel && /压缩/.test(coding.statusLabel) ? coding.statusLabel : null
-                  }
-                  variant="titlebar"
-                />
-              ) : null}
-            </div>
-          </div>
-
           {!isNormal ? (
             <div className="titlebar-no-drag border-b border-[var(--lab-warn-border)]/40 bg-[var(--lab-warn-soft)] px-4 py-2 text-[11.5px] text-[var(--lab-ink-2)]">
               <span className="font-medium text-[var(--lab-warn)]">概念预览</span>
@@ -1389,14 +1518,24 @@ export default function App() {
                   }
                   engineKey={isNormal ? chatModel : engine}
                   onEngineChange={(key) => {
-                    if (isNormal) setChatModel(key);
-                    else setEngine(key);
+                    if (isNormal) {
+                      const changed = key !== chatModel;
+                      setChatModel(key);
+                      // Stop an idle long-lived CLI immediately so the next
+                      // turn cannot accidentally continue with the old model.
+                      // A running turn is locked by Composer and is handled by
+                      // the bridge fingerprint on its next safe boundary.
+                      if (changed && activeExp && !dockBusy) {
+                        void window.lab?.agentCancel(activeExp);
+                      }
+                    } else setEngine(key);
                   }}
                   onEnginePending={(name) => pushEnginePendingNotice(name)}
                   customApi={customApi}
                   onRequestCustomApi={() => {
                     setCustomApiDraft(customApi);
                     setApiPreset(presetForBaseUrl(customApi.baseUrl));
+                    setApiCheckError(null);
                     setCustomApiOpen(true);
                   }}
                   busy={isNormal && dockBusy}
@@ -1828,8 +1967,24 @@ export default function App() {
               </div>
 
               <div className="mb-4">
-                <div className="mb-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
-                  {isNormal ? "模型" : "Coding 引擎"}
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
+                    {isNormal ? "模型" : "Coding 引擎"}
+                  </div>
+                  {isNormal ? (
+                    <span
+                      className={
+                        "text-[10px] " +
+                        (customApi.verification === "verified"
+                          ? "text-[var(--lab-green)]"
+                          : customApi.verification === "error"
+                            ? "text-[var(--lab-red)]"
+                            : "text-[var(--lab-ink-3)]")
+                      }
+                    >
+                      {apiVerificationLabel(customApi.verification)} · {customApi.source === "env" ? "lab-agent.env" : "本机 API 配置"}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="space-y-1">
                   {isNormal ? (
@@ -1854,18 +2009,24 @@ export default function App() {
                           </button>
                         ))
                       )}
+                      {customApi.lastError ? (
+                        <div className="rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)]">
+                          {customApi.lastError}
+                        </div>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => {
                           setCustomApiDraft(customApi);
                           setApiPreset(presetForBaseUrl(customApi.baseUrl));
+                          setApiCheckError(null);
                           setCustomApiOpen(true);
                           setSettingsOpen(false);
                         }}
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)]"
                       >
                         <span className="flex-1">{customApi.models.length ? "刷新 / 更换 API…" : "添加 API…"}</span>
-                        {customApi.baseUrl ? <span className="text-[9px] text-[var(--lab-ink-3)]">已配置</span> : null}
+                        {customApi.baseUrl ? <span className="text-[9px] text-[var(--lab-ink-3)]">{apiVerificationLabel(customApi.verification)}</span> : null}
                       </button>
                     </>
                   ) : (
@@ -1937,7 +2098,7 @@ export default function App() {
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[15px] font-semibold text-[var(--lab-ink)]">添加 API</div>
-                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">选择厂商后只需填写 API Key，保存后拉取可用模型</div>
+                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">填写 Key 后先验证连接，成功后才会保存可用模型</div>
                 </div>
                 <button type="button" className="rounded-md px-2 py-1 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]" onClick={() => !fetchingModels && setCustomApiOpen(false)} disabled={fetchingModels}>×</button>
               </div>
@@ -1952,11 +2113,13 @@ export default function App() {
                       type="button"
                       disabled={fetchingModels}
                       onClick={() => {
+                        setApiCheckError(null);
                         setApiPreset(p.id);
                         setCustomApiDraft((d) => ({
                           ...d,
                           baseUrl: p.id === "custom" ? d.baseUrl : p.baseUrl,
                           provider: p.id === "custom" ? detectProvider(d.baseUrl || p.baseUrl) : p.provider,
+                          protocol: p.id === "custom" ? d.protocol : p.protocol,
                         }));
                       }}
                       className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${
@@ -1981,6 +2144,7 @@ export default function App() {
                         ...d,
                         baseUrl: e.target.value,
                         provider: detectProvider(e.target.value),
+                        lastError: undefined,
                       }))
                     }
                     placeholder="https://…"
@@ -2005,14 +2169,19 @@ export default function App() {
               <input
                 type="password"
                 value={customApiDraft.apiKey}
-                onChange={(e) => setCustomApiDraft((d) => ({ ...d, apiKey: e.target.value }))}
+                onChange={(e) => {
+                  setApiCheckError(null);
+                  setCustomApiDraft((d) => ({ ...d, apiKey: e.target.value, lastError: undefined }));
+                }}
                 placeholder="sk-…"
                 className="mb-3 w-full rounded-lg border border-[var(--lab-border)] bg-[var(--lab-inset)] px-2.5 py-2 text-[12px] text-[var(--lab-ink)] outline-none"
                 autoFocus
               />
               {customApi.models.length > 0 ? (
                 <div className="mb-4 max-h-32 space-y-1 overflow-y-auto rounded-lg border border-[var(--lab-border-soft)] p-2">
-                  <div className="px-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">已缓存 {customApi.models.length} 个模型</div>
+                  <div className="px-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
+                    模型快照 · {apiVerificationLabel(customApi.verification)} · {customApi.models.length} 个
+                  </div>
                   {customApi.models.map((m) => (
                     <div key={m.id} className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[var(--lab-ink-2)]">
                       <span className="min-w-0 flex-1 truncate">{m.name}</span>
@@ -2023,6 +2192,11 @@ export default function App() {
               ) : (
                 <p className="mb-4 text-[11px] text-[var(--lab-ink-3)]">选好厂商后粘贴 Key，点保存即可拉取模型列表。</p>
               )}
+              {apiCheckError || customApi.lastError ? (
+                <div className="mb-4 rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)]">
+                  {apiCheckError || customApi.lastError}
+                </div>
+              ) : null}
               <div className="flex justify-end gap-2">
                 <button type="button" className="rounded-lg px-3 py-1.5 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)]" disabled={fetchingModels} onClick={() => setCustomApiOpen(false)}>取消</button>
                 <button
@@ -2041,43 +2215,65 @@ export default function App() {
                         showToast(LAB_PREVIEW_HINT);
                         return;
                       }
+                      const providerPreset = API_PROVIDER_PRESETS.find((p) => p.id === apiPreset);
+                      const provider = providerPreset?.provider || detectProvider(baseUrl);
+                      const protocol = providerPreset?.protocol || protocolForProvider(provider);
                       setFetchingModels(true);
                       try {
-                        const res = await window.lab.listModels({ baseUrl, apiKey: key });
+                        const res = await window.lab.listModels({ baseUrl, apiKey: key, protocol });
                         if (!res.ok || !res.models?.length) {
-                          showToast(res.error || "拉取模型失败");
+                          const message = apiErrorSummary(res.errorKind, res.error);
+                          setApiCheckError(message);
+                          showToast("API 验证失败，请检查 Key、Base URL 或协议");
                           return;
                         }
-                        const provider =
-                          API_PROVIDER_PRESETS.find((p) => p.id === apiPreset)?.provider ||
-                          detectProvider(baseUrl);
-                        const models = mapModelsResponse({ data: res.models }, provider === "unknown" ? detectProvider(baseUrl) : provider).map((m) => ({
+                        const resolvedProvider = provider === "unknown" ? detectProvider(baseUrl) : provider;
+                        const models = mapModelsResponse({ data: res.models }, resolvedProvider).map((m) => ({
                           ...m,
                           name: prettifyModelId(m.id),
                         }));
                         const next: CustomApiConfig = {
                           baseUrl,
                           apiKey: key,
-                          provider: provider === "unknown" ? detectProvider(baseUrl) : provider,
+                          provider: resolvedProvider,
+                          protocol,
                           models,
+                          verification: "verified",
+                          verifiedAt: Date.now(),
+                          lastError: undefined,
+                          source: "user",
                         };
+                        const runtimeChanged =
+                          customApi.baseUrl !== next.baseUrl ||
+                          customApi.apiKey !== next.apiKey ||
+                          customApi.protocol !== next.protocol;
+                        if (runtimeChanged && activeExp && !dockBusy) {
+                          void window.lab?.agentCancel(activeExp);
+                        }
                         setCustomApi(next);
+                        setApiCheckError(null);
                         setCustomApiDraft(next);
                         setApiPreset(presetForBaseUrl(baseUrl));
                         saveCustomApi(next);
-                        void window.lab.setApiKey(key);
+                        void window.lab.setApiKey(key, { baseUrl, model: models[0].id });
                         setChatModel(models[0].id);
                         setCustomApiOpen(false);
-                        showToast(`已拉取 ${models.length} 个模型${res.endpoint ? ` · ${res.endpoint}` : ""}`);
+                        showToast(
+                          protocol === "openai-chat"
+                            ? `已拉取 ${models.length} 个模型，但当前 Agent 仍需 Anthropic Messages 兼容接口`
+                            : `已拉取 ${models.length} 个模型${res.endpoint ? ` · ${res.endpoint}` : ""}`,
+                        );
                       } catch (err) {
-                        showToast(`拉取失败：${err instanceof Error ? err.message : String(err)}`);
+                        const message = redactSensitiveText(err instanceof Error ? err.message : String(err));
+                        setApiCheckError(message);
+                        showToast("API 验证失败，请检查网络或配置");
                       } finally {
                         setFetchingModels(false);
                       }
                     })();
                   }}
                 >
-                  {fetchingModels ? "拉取中…" : "保存并拉取模型"}
+                  {fetchingModels ? "验证中…" : "验证并保存"}
                 </button>
               </div>
             </div>
@@ -2085,6 +2281,7 @@ export default function App() {
         ) : null}
 
       </main>
+      </div>
     </div>
   );
 }

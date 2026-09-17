@@ -29,7 +29,7 @@
 
 > [!WARNING]
 > **Windows**
-> Lab Agent is developed and tested primarily on **macOS**. Windows builds are provided, but some behavior may be incomplete or mismatched.
+> Windows builds now use a native Windows title bar, system shell, and Windows font metrics. Please still verify your target Windows version and display scaling (100% / 125% / 150%) before distribution.
 > If you hit issues on Windows (or anywhere else), email feedback to **[zfu9751@gmail.com](mailto:zfu9751@gmail.com)** with OS version, steps, and screenshots (redact API keys).
 
 > [!NOTE]
@@ -87,9 +87,13 @@ Inspired by how projects like [OpenCode](https://github.com/anomalyco/opencode) 
 Copy [`agents/lab-coding/lab-agent.env.example`](./agents/lab-coding/lab-agent.env.example) to `lab-agent.env` (never commit the real file). Set your API key and official base URL:
 
 - **DeepSeek** — key + `https://api.deepseek.com` (default; DeepSeek Flash)
-- **OpenAI** — key + `https://api.openai.com/v1`
+- **OpenAI** — key + `https://api.openai.com/v1` (模型列表可读取；Lab Coding 对话当前仍要求 Anthropic Messages 兼容接口)
+
+The desktop Lab Coding runtime currently sends Anthropic Messages requests. DeepSeek should use `https://api.deepseek.com` in the UI; the runtime maps it to DeepSeek's official Anthropic-compatible endpoint internally. Custom gateways must expose the same Anthropic Messages contract. OpenAI Chat Completions routing is intentionally reported as unsupported instead of silently sending the wrong request format.
 
 The desktop app can also take a key from its settings UI.
+
+The API dialog verifies the credential by loading the provider's model list before saving the model snapshot. A snapshot marked 未验证 or 验证失败 is not treated as a healthy connection. An explicit configuration saved in the dialog takes precedence over lab-agent.env; legacy local settings without a source marker are revalidated during startup so an old key cannot silently shadow the environment configuration.
 
 ---
 

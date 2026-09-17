@@ -122,6 +122,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         tools: tools.length ? tools : undefined,
         thinking: state.thinkingText?.trim() || undefined,
         interrupted: interrupted || undefined,
+        error: Boolean(event.isError && !interrupted),
         engineUuid: event.messageUuid || state.streaming?.engineUuid,
         usage: event.usage || state.streaming?.usage,
       };
@@ -150,6 +151,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         ts: Date.now(),
         tools: (state.tools ?? []).length ? state.tools : undefined,
         thinking: state.thinkingText?.trim() || undefined,
+        error: true,
       };
       return {
         ...state,

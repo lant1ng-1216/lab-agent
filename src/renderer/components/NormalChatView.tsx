@@ -291,25 +291,27 @@ function AssistantMessageBody({
   const thinking = msg.thinking?.trim();
   const open = (file: string) => onFileOpen?.(file, msg.tools);
   return (
-    <AssistantShell mood="idle" showAvatar={showAvatar}>
+    <AssistantShell mood={msg.error ? "error" : "idle"} showAvatar={showAvatar}>
       {thinking ? <ThinkingBand text={thinking} working={false} /> : null}
       {msg.tools?.length ? <MessageTools tools={msg.tools} working={false} onFileOpen={open} /> : null}
-      {msg.interrupted ? (
-        <div className="text-[11.5px] text-[var(--lab-ink-3)]">已中断 · 可编辑上一条后重发</div>
-      ) : null}
-      {looksLikePlan(msg.content) && !msg.interrupted ? (
-        <details open className="group">
-          <summary className="cursor-pointer list-none text-[11px] font-semibold tracking-[0.06em] text-[var(--lab-ink-3)]">
-            计划 / 说明
-            <span className="ml-2 font-normal text-[var(--lab-ink-3)] group-open:hidden">展开</span>
-          </summary>
-          <div className="mt-2">
-            <MarkdownBody text={msg.content} />
-          </div>
-        </details>
-      ) : (
-        <MarkdownBody text={msg.content} />
-      )}
+      <div className={msg.error ? "rounded-xl border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-3 py-2.5 text-[var(--lab-red)]" : undefined}>
+        {msg.interrupted ? (
+          <div className="text-[11.5px] text-[var(--lab-ink-3)]">已中断 · 可编辑上一条后重发</div>
+        ) : null}
+        {looksLikePlan(msg.content) && !msg.interrupted ? (
+          <details open className="group">
+            <summary className="cursor-pointer list-none text-[11px] font-semibold tracking-[0.06em] text-[var(--lab-ink-3)]">
+              计划 / 说明
+              <span className="ml-2 font-normal text-[var(--lab-ink-3)] group-open:hidden">展开</span>
+            </summary>
+            <div className="mt-2">
+              <MarkdownBody text={msg.content} />
+            </div>
+          </details>
+        ) : (
+          <MarkdownBody text={msg.content} />
+        )}
+      </div>
       <TurnTokenFooter usage={msg.usage} />
     </AssistantShell>
   );
@@ -332,6 +334,8 @@ export default function NormalChatView({
   onWithdrawUser,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollFrame = useRef<number | null>(null);
+  const shouldAutoScroll = useRef(true);
   const tools = state.tools ?? [];
   const thinkingText = state.thinkingText?.trim() ?? "";
   const archivedOnStream = state.streaming?.thinking?.trim() ?? "";
@@ -347,6 +351,12 @@ export default function NormalChatView({
     }
     prevMsgLen.current = len;
   }, [state.messages]);
+
+  useEffect(() => {
+    // A newly appended row should bring the conversation back to the live
+    // edge; after that, respect a user who scrolls upward.
+    shouldAutoScroll.current = true;
+  }, [state.messages.length]);
 
   const busy =
     state.status === "thinking" ||
@@ -423,7 +433,18 @@ export default function NormalChatView({
   );
 
   useEffect(() => {
-    if (!empty) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (empty || !shouldAutoScroll.current) return;
+    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    });
+    return () => {
+      if (scrollFrame.current !== null) {
+        cancelAnimationFrame(scrollFrame.current);
+        scrollFrame.current = null;
+      }
+    };
   }, [
     empty,
     state.messages.length,
@@ -479,7 +500,13 @@ export default function NormalChatView({
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto px-4 pb-4 pt-4">
+    <div
+      className="h-full min-h-0 overflow-y-auto px-4 pb-4 pt-4"
+      onScroll={(event) => {
+        const el = event.currentTarget;
+        shouldAutoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+      }}
+    >
       <div className="mx-auto w-full max-w-[var(--lab-chat-max,920px)] space-y-4 pl-2 pr-3 sm:pl-3 sm:pr-4">
           <div className="mb-1 px-1 text-[11px] text-[var(--lab-ink-3)]" style={{ paddingLeft: AVATAR_COL + 12 }}>
             {sessionName}
@@ -493,7 +520,7 @@ export default function NormalChatView({
                     if (turnWorking || liveTurn) return false;
                     if (!onResendFromUser && !onWithdrawUser) return false;
                     const next = state.messages[i + 1];
-                    if (next?.interrupted) return true;
+                    if (next?.interrupted || next?.error) return true;
                     // Stop with no archived reply — conversation ends on this user turn
                     return i === state.messages.length - 1 && !next;
                   })()}

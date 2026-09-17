@@ -2,6 +2,33 @@
 
 export type AgentRole = 'supervisor' | 'coding';
 
+/** Protocol spoken by the provider endpoint used by Lab Coding. */
+export type ApiProtocol = 'anthropic-messages' | 'openai-chat';
+
+/** Normalized provider failure categories used by the desktop UI. */
+export type ApiErrorKind =
+  | 'auth'
+  | 'forbidden'
+  | 'invalid-request'
+  | 'not-found'
+  | 'rate-limit'
+  | 'server'
+  | 'timeout'
+  | 'network'
+  | 'unknown';
+
+/** Remove credentials and credential-shaped values before crossing into UI/logs. */
+export function redactSensitiveText(value: string): string {
+  let text = String(value || '');
+  text = text.replace(
+    /(["']?(?:api[\s_-]?key|x-api-key|authorization|token)["']?\s*[:=]\s*["']?)[^"'\s,}]+/gi,
+    '$1[已隐藏]',
+  );
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [已隐藏]');
+  text = text.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-••••');
+  return text.slice(0, 1200);
+}
+
 export type LoopStatus = 'idle' | 'thinking' | 'streaming' | 'tool' | 'waiting' | 'error';
 
 /** One API turn's token usage (from stream-json result.usage) */
@@ -32,6 +59,8 @@ export interface ChatMessage {
   thinking?: string;
   /** Stopped mid-turn — UI can offer edit & resend on the prior user message */
   interrupted?: boolean;
+  /** Provider/engine failure — render with an error treatment instead of a normal reply. */
+  error?: boolean;
   /** Lab Code JSONL message.uuid — used with --resume-session-at on edit/withdraw */
   engineUuid?: string;
   /** This turn's token usage (assistant only) */
@@ -126,12 +155,15 @@ export const IPC = {
 export interface ListModelsRequest {
   baseUrl: string;
   apiKey: string;
+  protocol?: ApiProtocol;
 }
 
 export interface ListModelsResult {
   ok: boolean;
   models?: { id: string; owned_by?: string }[];
   error?: string;
+  errorKind?: ApiErrorKind;
+  status?: number;
   endpoint?: string;
 }
 
@@ -155,6 +187,8 @@ export interface AgentPromptRequest {
   permissionMode?: string;
   apiKey?: string;
   baseUrl?: string;
+  /** The endpoint protocol. Lab Coding currently executes Anthropic Messages. */
+  protocol?: ApiProtocol;
 }
 
 export interface AskUserQuestionOption {

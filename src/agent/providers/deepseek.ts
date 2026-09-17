@@ -13,7 +13,7 @@ export class DeepSeekProvider implements LLMProvider {
 
   constructor(
     private apiKey: string,
-    private model = 'deepseek-chat',
+    private model = 'deepseek-flash',
     private baseUrl = 'https://api.deepseek.com',
   ) {}
 
@@ -22,7 +22,8 @@ export class DeepSeekProvider implements LLMProvider {
       return '[DeepSeek] 未配置 API Key。请在设置中填入 DEEPSEEK_API_KEY，当前为离线占位回复。';
     }
 
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const baseUrl = this.baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
+    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

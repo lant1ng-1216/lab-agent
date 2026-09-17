@@ -94,7 +94,7 @@ const DEFAULT_COMMANDS = [
   { key: "summarize", name: "/summarize", desc: "Digest the thread so far" },
 ];
 
-export type PromptModel = { key: string; name: string; tag: string; brand?: string };
+export type PromptModel = { key: string; name: string; tag: string; brand?: string; disabled?: boolean };
 
 export type SourceActionResult = {
   handled: boolean;
@@ -326,6 +326,7 @@ export default function PromptBar({
   };
 
   const selectModel = (next: PromptModel) => {
+    if (next.disabled) return;
     setModel(next);
     setModelOpen(false);
     if (next.key === "sprinkles-5" || next.key === "lab-deepseek") celebrate();
@@ -626,7 +627,8 @@ export default function PromptBar({
                 selectModel(m);
                 inputRef.current?.focus();
               }}
-              className="relative z-10 flex h-8 w-full items-center gap-2 rounded-[6px] px-2 text-left"
+              disabled={m.disabled}
+              className="relative z-10 flex h-8 w-full items-center gap-2 rounded-[6px] px-2 text-left disabled:pointer-events-none disabled:opacity-45"
             >
               {m.brand && BRANDS[m.brand] ? (
                 <span className="flex size-3.5 shrink-0 items-center justify-center overflow-hidden">{BRANDS[m.brand]}</span>

@@ -63,6 +63,7 @@ function TermNodeInner({ data, selected }: NodeProps<TermFlowNode>) {
   const [ready, setReady] = useState(false);
 
   const title = data.kind === "lab" ? "Lab Agent" : "Coding Agent";
+  const isMacPlatform = window.lab?.platform === "darwin";
   // Lab supervisor uses a shell PTY; Coding uses the selected coding engine.
   const engineId = data.kind === "lab" ? "shell" : (data.engine ?? "lab-deepseek");
   const engineName =
@@ -219,16 +220,21 @@ function TermNodeInner({ data, selected }: NodeProps<TermFlowNode>) {
     >
       <style>{HANDLE_CSS}</style>
 
-      {/* native macOS terminal chrome */}
+      {/* Keep the terminal card chrome neutral on Windows/Linux; only macOS
+          uses the traffic-light affordance. */}
       <div
         className="flex shrink-0 items-center gap-2 border-b border-[var(--lab-border-soft)] px-2.5 py-1.5"
         style={{ background: "var(--lab-bg-raised)" }}
       >
-        <span className="flex gap-1.5">
-          <i className="block size-[11px] rounded-full bg-[#ff5f57]" />
-          <i className="block size-[11px] rounded-full bg-[#febc2e]" />
-          <i className="block size-[11px] rounded-full bg-[#28c840]" />
-        </span>
+        {isMacPlatform ? (
+          <span className="flex gap-1.5">
+            <i className="block size-[11px] rounded-full bg-[#ff5f57]" />
+            <i className="block size-[11px] rounded-full bg-[#febc2e]" />
+            <i className="block size-[11px] rounded-full bg-[#28c840]" />
+          </span>
+        ) : (
+          <span className="rounded bg-[var(--lab-hover)] px-1.5 py-0.5 text-[9px] text-[var(--lab-ink-3)]">TERMINAL</span>
+        )}
         <div className="min-w-0 flex-1 text-center font-[var(--lab-mono)]">
           <span className="truncate text-[11px] text-[var(--lab-ink-2)]">
             {title} — {subtitle}

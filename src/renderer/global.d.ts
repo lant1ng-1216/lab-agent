@@ -24,9 +24,10 @@ declare module "*.svg" {
 declare global {
   interface Window {
     lab: {
+      platform?: string;
       getRole: () => Promise<string>;
       getSettings: () => Promise<{ model: string; hasKey: boolean; workspacePath: string }>;
-      setApiKey: (key: string) => Promise<boolean>;
+      setApiKey: (key: string, opts?: { baseUrl?: string; model?: string }) => Promise<boolean>;
       listModels: (payload: ListModelsRequest) => Promise<ListModelsResult>;
       agentPrompt: (payload: AgentPromptRequest) => Promise<{ ok: boolean; error?: string }>;
       agentCancel: (

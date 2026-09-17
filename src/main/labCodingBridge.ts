@@ -1,8 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
-import { AGENT_PERMISSION_TIMEOUT_MS, type TokenUsageSnapshot } from '../shared/protocol'
+import {
+  AGENT_PERMISSION_TIMEOUT_MS,
+  redactSensitiveText,
+  type ApiProtocol,
+  type TokenUsageSnapshot,
+} from '../shared/protocol'
 import { isAskUserQuestionTool, shouldAutoAllowTool } from '../shared/permissionPolicy'
 
 export type BridgeEvent =
@@ -67,11 +73,48 @@ export type PromptRequest = {
   permissionMode?: string
   apiKey?: string
   baseUrl?: string
+  protocol?: ApiProtocol
 }
 
 const PERMISSION_TIMEOUT_MS = AGENT_PERMISSION_TIMEOUT_MS
 /** Only while a turn is in-flight (tools / waiting) — idle between turns is OK */
 const BUSY_IDLE_TIMEOUT_MS = 90_000
+
+function normalizeRuntimeBase(base?: string): string {
+  return String(base || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/anthropic$/i, '')
+    .replace(/\/v1$/i, '')
+    .toLowerCase()
+}
+
+function runtimeConfigFingerprint(req: PromptRequest): string {
+  const key = req.apiKey
+    ? createHash('sha256').update(req.apiKey).digest('hex').slice(0, 16)
+    : ''
+  return [
+    req.protocol || 'anthropic-messages',
+    req.model?.trim() || '',
+    normalizeRuntimeBase(req.baseUrl),
+    key,
+    req.permissionMode || 'default',
+  ].join('|')
+}
+
+function safeEndpoint(value: string | undefined): string {
+  if (!value) return '(default)'
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return value.replace(/[?#].*$/, '').slice(0, 180)
+  }
+}
 
 type SessionState = {
   claudeSessionId?: string
@@ -80,6 +123,11 @@ type SessionState = {
   cwd?: string
   /** Permission mode used when this process was spawned */
   spawnedPermissionMode?: string
+  /** Non-secret fingerprint of the runtime config used to spawn this process */
+  spawnedConfigFingerprint?: string
+  spawnedProtocol?: ApiProtocol
+  spawnedModel?: string
+  spawnedBaseUrl?: string
   /** True while waiting for the current turn's result */
   turnBusy: boolean
   tools: Map<string, Extract<BridgeEvent, { kind: 'tool' }>>
@@ -194,7 +242,10 @@ function buildEnv(
     merged.ANTHROPIC_AUTH_TOKEN = key
     merged.ANTHROPIC_API_KEY = key
   }
-  const rawBase = String(merged.BASE_URL || merged.ANTHROPIC_BASE_URL || 'https://api.deepseek.com')
+  // Runtime values from the renderer are placed in ANTHROPIC_BASE_URL. Prefer
+  // that over the legacy BASE_URL from lab-agent.env so a UI change cannot be
+  // silently routed back to an old gateway.
+  const rawBase = String(merged.ANTHROPIC_BASE_URL || merged.BASE_URL || 'https://api.deepseek.com')
     .trim()
     .replace(/\/+$/, '')
     .replace(/\/v1$/i, '')
@@ -1074,10 +1125,13 @@ export class LabCodingBridge {
 
     if (type === 'result') {
       this.finalizeRunningTools(s, sessionKey, false)
-      const text =
+      const resultText =
         typeof obj.result === 'string' && obj.result
           ? obj.result
           : s.assistantAccum || (obj.is_error ? '请求失败' : '')
+      const text = obj.is_error
+        ? `${redactSensitiveText(resultText)}\n\n诊断：model=${s.spawnedModel || '(env)'} · protocol=${s.spawnedProtocol || 'anthropic-messages'} · base=${safeEndpoint(s.spawnedBaseUrl)}`
+        : resultText
       if (typeof obj.session_id === 'string') s.claudeSessionId = obj.session_id
       s.turnBusy = false
       this.emit(sessionKey, {
@@ -1159,13 +1213,26 @@ export class LabCodingBridge {
       }
     }
 
-    // Same cwd + live process → follow-up turn on the same Lab Code session
-    // Edit/withdraw must recycle so --resume-session-at can take effect
+    // Same cwd + live process → follow-up turn on the same Lab Code session.
+    // A model/base/key/protocol change must recycle the process; otherwise the
+    // UI can show one model while the long-lived CLI still uses another.
     const wantMode = req.permissionMode || 'default'
+    const wantProtocol = req.protocol || 'anthropic-messages'
+    const requestedFingerprint = runtimeConfigFingerprint(req)
     if (this.isAlive(state) && state.cwd === req.cwd && !needsTruncate) {
-      if (state.spawnedPermissionMode && state.spawnedPermissionMode !== wantMode) {
-        // Permission mode changed mid-session — recycle process, keep UUID for --resume
+      const configChanged = state.spawnedConfigFingerprint !== requestedFingerprint
+      if (configChanged) {
+        if (state.turnBusy) {
+          this.emit(req.sessionKey, {
+            kind: 'error',
+            text: '当前回合仍在运行，模型或 API 配置将在本回合结束后生效，请先点 Stop',
+          })
+          return
+        }
+        this.emit(req.sessionKey, { kind: 'status', text: '配置已变化 · 重启引擎并保留会话…' })
+        const protocolChanged = state.spawnedProtocol && state.spawnedProtocol !== wantProtocol
         this.killProcess(state)
+        if (protocolChanged) state.claudeSessionId = undefined
       } else {
         if (state.turnBusy) {
           this.emit(req.sessionKey, {
@@ -1205,6 +1272,12 @@ export class LabCodingBridge {
         base = base.replace(/\/v1$/, '') + '/anthropic'
       }
       envExtra.ANTHROPIC_BASE_URL = base
+    }
+    if (req.model) {
+      // Keep env fallbacks and sub-agent model aliases aligned with the
+      // explicit picker value; --model below remains the main-loop authority.
+      envExtra.MODEL = req.model
+      envExtra.ANTHROPIC_MODEL = req.model
     }
     const env = buildEnv(this.root, this.configDir, envExtra)
     try {
@@ -1272,7 +1345,15 @@ export class LabCodingBridge {
     })
     state.proc = proc
     state.cwd = req.cwd
-    state.spawnedPermissionMode = req.permissionMode || 'default'
+    state.spawnedPermissionMode = wantMode
+    state.spawnedConfigFingerprint = requestedFingerprint
+    state.spawnedProtocol = wantProtocol
+    state.spawnedModel = req.model || env.ANTHROPIC_MODEL || '(env)'
+    state.spawnedBaseUrl = env.ANTHROPIC_BASE_URL
+    const keyFingerprint = createHash('sha256').update(String(key)).digest('hex').slice(0, 16)
+    this.appendEngineLog(
+      `launch session=${req.sessionKey} model=${req.model || '(env)'} protocol=${wantProtocol} base=${safeEndpoint(env.ANTHROPIC_BASE_URL)} key=${keyFingerprint}`,
+    )
     this.beginTurn(state)
     this.armBusyIdleWatch(req.sessionKey, state)
     this.attachStdout(req.sessionKey, state, proc)
@@ -1292,7 +1373,7 @@ export class LabCodingBridge {
       this.clearIdleTimer(state)
       this.clearPermTimers(state)
       this.finalizeRunningTools(state, req.sessionKey, true)
-      this.emit(req.sessionKey, { kind: 'error', text: err.message })
+      this.emit(req.sessionKey, { kind: 'error', text: redactSensitiveText(err.message) })
       state.proc = undefined
       state.rl = undefined
       state.turnBusy = false
@@ -1308,13 +1389,13 @@ export class LabCodingBridge {
       state.turnBusy = false
       if (wasBusy) {
         this.finalizeRunningTools(state, req.sessionKey, true)
-        const tip = errBuf
+        const tip = redactSensitiveText(errBuf
           .trim()
           .split(/\n/)
           .slice(-6)
           .join(' ')
           .replace(/\s+/g, ' ')
-          .slice(0, 800)
+          .slice(0, 800))
         this.appendEngineLog(
           `session=${req.sessionKey} exit=${code ?? 'null'} accum=${state.assistantAccum.length} stderr=${tip || '(empty)'}`,
         )

@@ -1,6 +1,6 @@
-/** Official engine marks. Lab Coding uses labagent.online/icon.png. */
+/** Official engine marks. Lab Coding uses the desktop application icon. */
 import type { ReactNode } from "react";
-import labAgentIcon from "../assets/brands/labagent-icon.png";
+import labAppIcon from "../../../build/icon.png";
 import deepseekLogo from "../assets/brands/deepseek.svg";
 
 function Mark({ path, fill = "currentColor", size = 14 }: { path: string; fill?: string; size?: number }) {
@@ -11,15 +11,15 @@ function Mark({ path, fill = "currentColor", size = 14 }: { path: string; fill?:
   );
 }
 
-/** Official site favicon from https://www.labagent.online/icon.png */
+/** Shared with electron-builder's desktop icon source. */
 export const LabCodingMark = (
   <img
-    src={labAgentIcon}
+    src={labAppIcon}
     alt=""
     width={14}
     height={14}
     draggable={false}
-    style={{ display: "block", imageRendering: "pixelated", borderRadius: 2 }}
+    style={{ display: "block", objectFit: "contain", borderRadius: 3 }}
   />
 );
 
