@@ -35,10 +35,16 @@ export function StreamText({ text, onDone }: { text: string; onDone?: () => void
   );
 }
 
-export function UserBubble({ children }: { children: ReactNode }) {
+export function UserBubble({ children, editable = false }: { children: ReactNode; editable?: boolean }) {
   return (
     <div className="flex justify-end pl-10">
-      <div className="max-w-[92%] lab-msg-bubble rounded-2xl bg-[var(--lab-inset)] px-3 py-2 text-[13.5px] leading-[1.5] text-[var(--lab-ink)]">
+      <div
+        className={`max-w-[92%] lab-msg-bubble rounded-2xl px-3 py-2 text-[13.5px] leading-[1.5] text-[var(--lab-ink)] ${
+          editable
+            ? "border border-[var(--lab-border)] bg-[var(--lab-surface)] shadow-sm transition-[background-color,border-color,box-shadow] duration-150 group-hover:border-[var(--lab-ink-3)] group-hover:shadow-md group-focus-within:border-[var(--lab-ink-3)] group-focus-within:shadow-md"
+            : "bg-[var(--lab-inset)]"
+        }`}
+      >
         {children}
       </div>
     </div>

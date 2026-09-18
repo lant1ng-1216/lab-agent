@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Push main + create GitHub Release with local installer artifacts.
-# Usage: ./scripts/publish-release.sh [v0.1.8]
+# Usage: ./scripts/publish-release.sh [v0.1.9]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAG="${1:-v0.1.8}"
+VERSION="$(node -p "require('./package.json').version")"
+TAG="${1:-v${VERSION}}"
 VER="${TAG#v}"
+
+if [[ "$VER" != "$VERSION" ]]; then
+  echo "release tag $TAG does not match package.json version $VERSION" >&2
+  exit 1
+fi
 
 echo "[publish] pushing main…"
 git push origin main
@@ -18,31 +24,10 @@ for f in "$MAC" "$WIN" "$LINUX"; do
 done
 
 echo "[publish] creating ${TAG}…"
+NOTES="docs/releases/${VER}.md"
+[[ -f "$NOTES" ]] || { echo "missing release notes: $NOTES" >&2; exit 1; }
 gh release create "$TAG" "$MAC" "$WIN" "$LINUX" \
   --title "Lab Agent ${VER}" \
-  --notes "## Lab Agent ${VER}
-
-- Improve desktop engine discovery and add sanitized runtime diagnostics when an engine or tool fails.
-- Make long-running Agent turns more reliable: permission waits are distinguished from stalls, and quiet Shell/tool work gets appropriate bounded timeouts.
-- Store the API Key locally using Electron's secure storage, clarify model-list verification, and show concise, bounded API errors.
-- Clean up model selection by deduplicating canonical IDs and presenting clear model names.
-- Replace speculative context-window percentages with reported cumulative token totals, with provider cache accounting covered by regression tests.
-- Improve conversation scrolling: reserve space above the composer, follow new output by default, respect history browsing, and provide a return-to-latest control.
-- Keep Agent working/complete presentation in sync and reduce visual flicker during tool activity.
-- Include regression coverage for engine discovery, watchdog behavior, credentials, model catalogs, token accounting, and chat scrolling.
-- macOS zip includes \`mac-first-open.command\` helper.
-- macOS build is ad-hoc signed and is **not Apple-notarized**.
-
-| Platform | File |
-| -------- | ---- |
-| macOS Apple Silicon | \`Lab-Agent-${VER}-mac-arm64.zip\` |
-| Windows x64 | \`Lab-Agent-${VER}-win-x64.zip\` |
-| Linux x64 | \`Lab-Agent-${VER}-linux-x64.tar.gz\` |
-
-### macOS first open
-1. Unzip → drag \`Lab Agent.app\` to Applications
-2. If blocked: System Settings → Privacy & Security → **Open Anyway**
-3. Or run \`mac-first-open.command\` from the unzipped folder
-"
+  --notes-file "$NOTES"
 
 echo "[publish] done → https://github.com/lant1ng-1216/lab-agent/releases/tag/$TAG"

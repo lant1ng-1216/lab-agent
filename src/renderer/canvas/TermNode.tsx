@@ -65,9 +65,12 @@ function TermNodeInner({ data, selected }: NodeProps<TermFlowNode>) {
   const title = data.kind === "lab" ? "Lab Agent" : "Coding Agent";
   const isMacPlatform = window.lab?.platform === "darwin";
   // Lab supervisor uses a shell PTY; Coding uses the selected coding engine.
-  const engineId = data.kind === "lab" ? "shell" : (data.engine ?? "lab-deepseek");
+  // Older saved canvases may still contain the removed Claude Code placeholder.
+  // Keep those terminals inside Lab Agent instead of launching an external CLI.
+  const savedEngineId = data.engine ?? "lab-deepseek";
+  const engineId = data.kind === "lab" ? "shell" : savedEngineId === "claude-code" ? "lab-deepseek" : savedEngineId;
   const engineName =
-    engineId === "lab-deepseek" ? "Lab Coding" : engineId === "claude-code" ? "Claude Code" : engineId.charAt(0).toUpperCase() + engineId.slice(1);
+    engineId === "lab-deepseek" ? "Lab Coding" : engineId.charAt(0).toUpperCase() + engineId.slice(1);
   const subtitle = data.kind === "lab" ? "监工 · 终端" : `终端 · ${engineName}`;
   const interactive = Boolean(data.interactive);
 

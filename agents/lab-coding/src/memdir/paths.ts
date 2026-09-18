@@ -43,6 +43,7 @@ export function isAutoMemoryEnabled(): boolean {
   }
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+    !process.env.LAB_AGENT_HOME &&
     !process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
   ) {
     return false
@@ -83,6 +84,11 @@ export function isExtractModeActive(): boolean {
  *   2. ~/.claude (default config home)
  */
 export function getMemoryBaseDir(): string {
+  // In Lab Agent mode, memory is product-owned even if a surrounding Claude
+  // process exported its remote-memory path.
+  if (process.env.LAB_AGENT_HOME) {
+    return process.env.LAB_AGENT_HOME
+  }
   if (process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR) {
     return process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
   }
@@ -159,6 +165,9 @@ function validateMemoryPath(
  * produce a different project-key for every session.
  */
 function getAutoMemPathOverride(): string | undefined {
+  if (process.env.LAB_AGENT_HOME) {
+    return undefined
+  }
   return validateMemoryPath(
     process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE,
     false,

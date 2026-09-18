@@ -18,18 +18,14 @@ export interface AgentWatchdogSnapshot {
   turnStartedAt: number;
 }
 
-/**
- * Permission has its own explicit 90-second timer. Shell commands get a longer
- * silence window because their output is often buffered by the coding engine.
- */
+/** A pending user decision suspends automatic timeouts until the user responds. */
 export function getAgentWatchdogStopReason(
   snapshot: AgentWatchdogSnapshot,
 ): AgentWatchdogStopReason | null {
-  if (!snapshot.turnBusy) return null;
+  if (!snapshot.turnBusy || snapshot.permissionPending) return null;
   if (snapshot.now - snapshot.turnStartedAt >= AGENT_WATCHDOG_LIMITS.hardTurnMs) {
     return "hard-limit";
   }
-  if (snapshot.permissionPending) return null;
 
   const idleLimit = snapshot.runningShell
     ? AGENT_WATCHDOG_LIMITS.shellNoOutputMs

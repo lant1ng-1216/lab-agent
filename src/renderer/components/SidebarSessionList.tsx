@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CaretDown,
   CaretRight,
@@ -101,9 +102,12 @@ export default function SidebarSessionList({
   const [searchOpen, setSearchOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [contextMenuPosition, setContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [folderMenu, setFolderMenu] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const searchRef = useRef<HTMLInputElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -112,14 +116,43 @@ export default function SidebarSessionList({
   }, [searchOpen]);
 
   useEffect(() => {
-    if (!menuId && !folderMenu) return;
+    if (!menuId && !folderMenu && !contextMenu) return;
     const close = () => {
       setMenuId(null);
+      setContextMenu(null);
       setFolderMenu(null);
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [menuId, folderMenu]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuId, folderMenu, contextMenu]);
+
+  useLayoutEffect(() => {
+    if (!contextMenu) return;
+
+    const reposition = () => {
+      const menu = contextMenuRef.current;
+      if (!menu) return;
+      const { width, height } = menu.getBoundingClientRect();
+      const margin = 8;
+      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+      const maxTop = Math.max(margin, window.innerHeight - height - margin);
+      setContextMenuPosition({
+        left: Math.max(margin, Math.min(contextMenu.x, maxLeft)),
+        top: Math.max(margin, Math.min(contextMenu.y, maxTop)),
+      });
+    };
+
+    reposition();
+    window.addEventListener("resize", reposition);
+    return () => window.removeEventListener("resize", reposition);
+  }, [contextMenu]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -197,9 +230,40 @@ export default function SidebarSessionList({
     setCollapsedFolders((m) => ({ ...m, [key]: !m[key] }));
   };
 
+  const openContextMenu = (id: string, x: number, y: number) => {
+    setMenuId(null);
+    setFolderMenu(null);
+    setContextMenuPosition({ left: x, top: y });
+    setContextMenu({ id, x, y });
+  };
+
   const renderSession = (e: Experiment, nested: boolean) => {
     const selected = activeExp === e.id;
     const status = activeStatus(e, isNormal);
+    const menuRows = [
+      { label: "重命名", fn: () => onRenameStart(e.id) },
+      { label: e.pinned ? "取消置顶" : "置顶", fn: () => onTogglePin(e.id) },
+      { label: e.archived ? "取消归档" : "归档", fn: () => onToggleArchive(e.id) },
+      { label: "删除", fn: () => onDeleteAsk(e.id), danger: true },
+    ];
+    const menuItems = menuRows.map((row) => (
+      <button
+        key={row.label}
+        type="button"
+        role="menuitem"
+        className={`block w-full px-3 py-1.5 text-left text-[12px] hover:bg-[var(--lab-hover)] ${
+          row.danger ? "text-[var(--lab-red)]" : "text-[var(--lab-ink)]"
+        }`}
+        onClick={(event) => {
+          event.stopPropagation();
+          setMenuId(null);
+          setContextMenu(null);
+          row.fn();
+        }}
+      >
+        {row.label}
+      </button>
+    ));
     return (
       <div key={e.id} className={`group relative flex items-center ${nested ? "pl-5" : ""}`}>
         {renaming === e.id ? (
@@ -218,12 +282,22 @@ export default function SidebarSessionList({
             type="button"
             onClick={() => onSwitch(e.id)}
             onDoubleClick={() => onRenameStart(e.id)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              openContextMenu(e.id, event.clientX, event.clientY);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+              event.preventDefault();
+              const rect = event.currentTarget.getBoundingClientRect();
+              openContextMenu(e.id, rect.left + 12, rect.bottom);
+            }}
             className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] ${
               selected
                 ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]"
                 : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)]/70 hover:text-[var(--lab-ink)]"
             }`}
-            title={`${e.name}（双击重命名）`}
+            title={`${e.name}（双击重命名；右键更多操作）`}
           >
             <span className={`size-1.5 shrink-0 rounded-full ${statusDotClass(status, selected)}`} />
             <span className="min-w-0 flex-1 truncate">{collapsed ? e.name.slice(-1) : e.name}</span>
@@ -239,6 +313,7 @@ export default function SidebarSessionList({
               onClick={(ev) => {
                 ev.stopPropagation();
                 setFolderMenu(null);
+                setContextMenu(null);
                 setMenuId((id) => (id === e.id ? null : e.id));
               }}
               className="flex size-6 items-center justify-center rounded-md text-[11px] tracking-widest text-[var(--lab-ink-3)] opacity-0 hover:bg-[var(--lab-inset)] hover:text-[var(--lab-ink)] group-hover:opacity-100"
@@ -251,29 +326,29 @@ export default function SidebarSessionList({
                 className="absolute right-0 top-7 z-40 min-w-[128px] overflow-hidden rounded-lg border border-[var(--lab-border-soft)] bg-[var(--lab-surface-solid)] py-1 shadow-[0_10px_28px_rgba(0,0,0,0.14)]"
                 onClick={(ev) => ev.stopPropagation()}
               >
-                {[
-                  { label: e.pinned ? "取消置顶" : "置顶", fn: () => onTogglePin(e.id) },
-                  { label: e.archived ? "取消归档" : "归档", fn: () => onToggleArchive(e.id) },
-                  { label: "删除", fn: () => onDeleteAsk(e.id), danger: true },
-                ].map((row) => (
-                  <button
-                    key={row.label}
-                    type="button"
-                    className={`block w-full px-3 py-1.5 text-left text-[12px] hover:bg-[var(--lab-hover)] ${
-                      row.danger ? "text-[var(--lab-red)]" : "text-[var(--lab-ink)]"
-                    }`}
-                    onClick={() => {
-                      row.fn();
-                      setMenuId(null);
-                    }}
-                  >
-                    {row.label}
-                  </button>
-                ))}
+                {menuItems}
               </div>
             ) : null}
           </div>
         ) : null}
+        {contextMenu?.id === e.id
+          ? createPortal(
+              <div
+                ref={contextMenuRef}
+                role="menu"
+                className="fixed z-[1000] min-w-[160px] overflow-hidden rounded-lg border border-[var(--lab-border-soft)] bg-[var(--lab-surface-solid)] py-1 shadow-[0_10px_28px_rgba(0,0,0,0.2)]"
+                style={{
+                  left: contextMenuPosition?.left ?? contextMenu.x,
+                  top: contextMenuPosition?.top ?? contextMenu.y,
+                }}
+                onClick={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                {menuItems}
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
     );
   };

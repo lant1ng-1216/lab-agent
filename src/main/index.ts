@@ -19,6 +19,7 @@ import { DeepSeekProvider } from '../agent/providers/deepseek';
 import { SupervisorLoop } from '../agent/loops/supervisor-loop';
 import { CodingLoop } from '../agent/loops/coding-loop';
 import { LabCodingBridge } from './labCodingBridge';
+import { labAgentRuntimeEnv } from '../shared/labAgentRuntime';
 
 // node-pty is CJS; load lazily so a missing native build doesn't crash the app
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -143,8 +144,15 @@ function resolveBundledLabCodingBinary(): string | undefined {
   return names.map((name) => path.join(root, name)).find((candidate) => fs.existsSync(candidate));
 }
 
+function resolveLabAgentConfigDir(): string {
+  const configured = process.env.LAB_AGENT_HOME?.trim();
+  if (configured && path.isAbsolute(configured)) return path.normalize(configured);
+  return path.join(app.getPath('userData'), 'lab-coding-config');
+}
+
 function enrichedPtyEnv(): Record<string, string> {
   const home = os.homedir();
+  const labAgentHome = resolveLabAgentConfigDir();
   const extras = [
     path.join(home, '.local/bin'),
     path.join(home, '.hermes/node/bin'),
@@ -160,7 +168,8 @@ function enrichedPtyEnv(): Record<string, string> {
     return true;
   }).join(path.delimiter);
 
-  return { ...(process.env as Record<string, string>), PATH: pathValue };
+  const env = labAgentRuntimeEnv({ ...(process.env as Record<string, string>), PATH: pathValue }, labAgentHome) as Record<string, string>;
+  return env;
 }
 
 function rendererUrl() {
@@ -746,7 +755,7 @@ function registerIpc() {
       return isWindows ? { cmd: shell, args: [] } : { cmd: shell, args: ['-il'] };
     }
 
-    if (e === 'lab-deepseek' || e.includes('deepseek') || e === 'lab-coding') {
+    if (e === 'lab-deepseek' || e.includes('deepseek') || e === 'lab-coding' || e === 'claude-code') {
       const bundled = resolveBundledLabCodingBinary();
       if (bundled) return { cmd: bundled, args: [] };
       const script = path.join(__dirname, 'lab-coding', 'index.js');
@@ -755,9 +764,6 @@ function registerIpc() {
       return isWindows
         ? { cmd: shell, args: ['/d', '/s', '/c', `${windowsQuote(node)} ${windowsQuote(script)}`] }
         : { cmd: shell, args: ['-lc', `${shellQuote(node)} ${shellQuote(script)}`] };
-    }
-    if (e.includes('claude')) {
-      return isWindows ? { cmd: shell, args: ['/d', '/s', '/c', 'claude'] } : { cmd: shell, args: ['-lc', 'claude'] };
     }
     if (e.includes('codex')) {
       return isWindows ? { cmd: shell, args: ['/d', '/s', '/c', 'codex'] } : { cmd: shell, args: ['-lc', 'codex'] };
@@ -824,7 +830,8 @@ app.whenReady().then(() => {
   const storedApiKey = readStoredApiKey();
   if (storedApiKey) settings.deepseekApiKey = storedApiKey;
 
-  labCodingBridge.setConfigDir(path.join(app.getPath('userData'), 'lab-coding-config'));
+  const labAgentHome = resolveLabAgentConfigDir();
+  labCodingBridge.setConfigDir(labAgentHome);
   labCodingBridge.logRuntimeInfo(
     app.getVersion(),
     app.isPackaged,

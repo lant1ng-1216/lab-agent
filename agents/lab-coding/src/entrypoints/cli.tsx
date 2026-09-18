@@ -41,15 +41,21 @@ if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
  * Fast-path for --version has zero imports beyond this file.
  */
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  let args = process.argv.slice(2);
 
   // Fast-path for --version/-v: zero module loading needed
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
     // MACRO.VERSION is inlined at build time
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`${MACRO.VERSION} (Claude Code)`);
+    console.log(`${MACRO.VERSION} (Lab Code Engine)`);
     return;
   }
+
+  // Normalize both desktop-launched and terminal-launched engine processes to
+  // Lab Agent's own cross-platform profile. Never inherit Claude Code's home
+  // or Cowork memory mounts implicitly.
+  const { initializeLabAgentEnvironment } = await import('../utils/labAgentHome.js');
+  initializeLabAgentEnvironment();
 
   // For all other paths, load the startup profiler
   const {
@@ -292,6 +298,16 @@ async function main(): Promise<void> {
   // option building (not just inside the action handler).
   if (args.includes('--bare')) {
     process.env.CLAUDE_CODE_SIMPLE = '1';
+  }
+
+  // Apply the Lab-owned memory boundary to normal terminal sessions too.
+  // Explicit user settings remain authoritative when supplied by the user.
+  const hasExplicitSettings = args.some(
+    arg => arg === '--settings' || arg.startsWith('--settings='),
+  )
+  if (!hasExplicitSettings) {
+    const { labAgentMemoryGuardSettings } = await import('../utils/labAgentHome.js')
+    process.argv.push('--settings', labAgentMemoryGuardSettings())
   }
 
   // No special flags detected, load and run the full CLI

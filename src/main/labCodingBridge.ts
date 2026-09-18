@@ -4,12 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
-import {
-  AGENT_PERMISSION_TIMEOUT_MS,
-  redactSensitiveText,
-  type ApiProtocol,
-  type TokenUsageSnapshot,
-} from '../shared/protocol'
+import { redactSensitiveText, type ApiProtocol, type TokenUsageSnapshot } from '../shared/protocol'
 import {
   contextTokensUsed,
   parseTokenUsageSnapshot,
@@ -17,6 +12,7 @@ import {
 } from '../shared/modelContext'
 import { AGENT_WATCHDOG_LIMITS, getAgentWatchdogStopReason } from '../shared/agentWatchdog'
 import { DESKTOP_AGENT_GUIDANCE } from '../shared/desktopAgentGuidance'
+import { labAgentMemoryGuardSettings, labAgentRuntimeEnv } from '../shared/labAgentRuntime'
 import { DESKTOP_RUNTIME_MARKER, isLikelyToolFailure, sanitizeDesktopDiagnostic } from '../shared/desktopRuntime'
 import { isAskUserQuestionTool, shouldAutoAllowTool } from '../shared/permissionPolicy'
 import { engineBinaryName, engineRootCandidates, findEngineRoot } from './enginePaths'
@@ -44,8 +40,6 @@ export type BridgeEvent =
       description: string
       inputPreview: string
       file?: string
-      expiresAt?: number
-      timeoutMs?: number
       questions?: {
         question: string
         header?: string
@@ -87,8 +81,6 @@ export type PromptRequest = {
   baseUrl?: string
   protocol?: ApiProtocol
 }
-
-const PERMISSION_TIMEOUT_MS = AGENT_PERMISSION_TIMEOUT_MS
 
 function normalizeRuntimeBase(base?: string): string {
   return String(base || '')
@@ -144,7 +136,6 @@ type SessionState = {
   tools: Map<string, Extract<BridgeEvent, { kind: 'tool' }>>
   toolStartedAt: Map<string, number>
   pendingPermInput: Map<string, Record<string, unknown>>
-  permTimers: Map<string, ReturnType<typeof setTimeout>>
   lastActivityAt: number
   idleTimer?: ReturnType<typeof setInterval>
   assistantAccum: string
@@ -214,14 +205,13 @@ function buildEnv(
   } catch {
     /* ignore — surfaced when engine fails */
   }
-  const merged: NodeJS.ProcessEnv = {
+  const merged = labAgentRuntimeEnv({
     ...process.env,
     ...fromFile,
     ...extra,
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || configDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || fromFile.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || '1',
-  }
+  }, configDir) as NodeJS.ProcessEnv
   merged.PATH = enginePathAugment(root, merged.PATH)
   const key =
     merged.DEEPSEEK_API_KEY ||
@@ -517,7 +507,6 @@ function emptyState(): SessionState {
   return {
     tools: new Map(),
     pendingPermInput: new Map(),
-    permTimers: new Map(),
     lastActivityAt: Date.now(),
     turnBusy: false,
     turnStartedAt: 0,
@@ -627,11 +616,6 @@ export class LabCodingBridge {
     }
   }
 
-  private clearPermTimers(s: SessionState) {
-    for (const t of s.permTimers.values()) clearTimeout(t)
-    s.permTimers.clear()
-  }
-
   private clearIdleTimer(s: SessionState) {
     if (s.idleTimer) {
       clearInterval(s.idleTimer)
@@ -693,7 +677,6 @@ export class LabCodingBridge {
     s.lastAssistantUuid = undefined
     s.pendingPermInput = new Map()
     s.toolStartedAt.clear()
-    this.clearPermTimers(s)
     this.touchActivity(s)
   }
 
@@ -710,7 +693,7 @@ export class LabCodingBridge {
       const runningShell = Boolean(activeTool && /bash|shell|powershell|terminal|command|run/i.test(activeTool.name))
       const reason = getAgentWatchdogStopReason({
         turnBusy: s.turnBusy,
-        permissionPending: s.permTimers.size > 0 || s.pendingPermInput.size > 0,
+        permissionPending: s.pendingPermInput.size > 0,
         runningTool: Boolean(activeTool),
         runningShell,
         now: Date.now(),
@@ -719,7 +702,6 @@ export class LabCodingBridge {
       })
       if (!reason) return
       this.clearIdleTimer(s)
-      this.clearPermTimers(s)
       this.finalizeRunningTools(s, sessionKey, true)
       s.pendingPermInput.clear()
       const shellIdleMinutes = Math.round(AGENT_WATCHDOG_LIMITS.shellNoOutputMs / 60_000)
@@ -779,7 +761,6 @@ export class LabCodingBridge {
       }
     }
     if (s) {
-      this.clearPermTimers(s)
       this.clearIdleTimer(s)
       if (hadProc || hadRunning || s.turnBusy) {
         this.finalizeRunningTools(s, sessionKey, true)
@@ -802,8 +783,7 @@ export class LabCodingBridge {
   }
 
   private transcriptPath(cwd: string, sessionId: string): string | undefined {
-    const configDir = process.env.CLAUDE_CONFIG_DIR || this.configDir
-    const projectsRoot = path.join(configDir, 'projects')
+    const projectsRoot = path.join(this.configDir, 'projects')
     const cwds = new Set<string>([cwd])
     try {
       cwds.add(fs.realpathSync(cwd))
@@ -879,8 +859,7 @@ export class LabCodingBridge {
 
   private purgeTranscript(cwd: string | undefined, sessionId: string | undefined) {
     if (!cwd || !sessionId) return
-    const configDir = process.env.CLAUDE_CONFIG_DIR || this.configDir
-    const projectsRoot = path.join(configDir, 'projects')
+    const projectsRoot = path.join(this.configDir, 'projects')
     const cwds = new Set<string>([cwd])
     try {
       cwds.add(fs.realpathSync(cwd))
@@ -930,11 +909,6 @@ export class LabCodingBridge {
     if (!s || !proc?.stdin || proc.stdin.destroyed) return false
     if (setMode === 'default' || setMode === 'acceptEdits' || setMode === 'bypassPermissions') {
       s.spawnedPermissionMode = setMode
-    }
-    const timer = s.permTimers.get(requestId)
-    if (timer) {
-      clearTimeout(timer)
-      s.permTimers.delete(requestId)
     }
     const base = s.pendingPermInput.get(requestId) ?? {}
     s.pendingPermInput.delete(requestId)
@@ -1039,8 +1013,6 @@ export class LabCodingBridge {
           : (typeof request.description === 'string' && request.description) ||
             (typeof request.title === 'string' && request.title) ||
             `${toolName} 需要你的批准后才能继续`
-        const timeoutMs = PERMISSION_TIMEOUT_MS
-        const expiresAt = Date.now() + timeoutMs
         this.emit(sessionKey, {
           kind: 'permission',
           requestId,
@@ -1049,30 +1021,8 @@ export class LabCodingBridge {
           description,
           inputPreview: meta.summary.slice(0, 280),
           file,
-          expiresAt,
-          timeoutMs,
           questions,
         })
-        const prevTimer = s.permTimers.get(requestId)
-        if (prevTimer) clearTimeout(prevTimer)
-        s.permTimers.set(
-          requestId,
-          setTimeout(() => {
-            s.permTimers.delete(requestId)
-            const ok = this.respondPermission(
-              sessionKey,
-              requestId,
-              false,
-              'Permission timed out in Lab Agent (90s)',
-            )
-            if (ok) {
-              this.emit(sessionKey, {
-                kind: 'status',
-                text: '权限等待超时 · 已自动拒绝',
-              })
-            }
-          }, timeoutMs),
-        )
       }
       return
     }
@@ -1383,6 +1333,8 @@ export class LabCodingBridge {
       req.permissionMode || 'default',
       '--append-system-prompt',
       DESKTOP_AGENT_GUIDANCE,
+      '--settings',
+      labAgentMemoryGuardSettings(),
     ]
     if (req.model && req.model !== '__add_api__') {
       args.push('--model', req.model)
@@ -1442,7 +1394,7 @@ export class LabCodingBridge {
 
     proc.on('error', (err) => {
       this.clearIdleTimer(state)
-      this.clearPermTimers(state)
+      state.pendingPermInput.clear()
       this.finalizeRunningTools(state, req.sessionKey, true)
       this.appendEngineLog(
         `process-error session=${sanitizeDesktopDiagnostic(req.sessionKey, os.homedir(), 100)} error=${sanitizeDesktopDiagnostic(err.message, os.homedir(), 800)}`,
@@ -1456,7 +1408,7 @@ export class LabCodingBridge {
 
     proc.on('close', (code) => {
       this.clearIdleTimer(state)
-      this.clearPermTimers(state)
+      state.pendingPermInput.clear()
       state.proc = undefined
       state.rl = undefined
       const wasBusy = state.turnBusy

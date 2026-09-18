@@ -13,7 +13,6 @@ import type { PermissionModeId } from "../lib/permissionModes";
 /** Supervisor mode: switch coding engines (Lab Coding ready; others placeholder). */
 export const LAB_ENGINE_MODELS = [
   { key: "lab-deepseek", name: "Lab Coding", tag: "自建", brand: "lab-coding" },
-  { key: "claude-code", name: "Claude Code", tag: "CLI", brand: "claude" },
   { key: "codex", name: "Codex", tag: "CLI", brand: "openai" },
   { key: "cursor", name: "Cursor", tag: "CLI", brand: "cursor" },
   { key: "opencode", name: "OpenCode", tag: "CLI", brand: "opencode" },
@@ -68,6 +67,11 @@ interface Props {
   onStop?: () => void;
   permissionMode?: PermissionModeId;
   onPermissionModeChange?: (mode: PermissionModeId) => void;
+  seedDraft?: string | null;
+  seedNonce?: number;
+  quoteText?: string | null;
+  quoteNonce?: number;
+  onQuoteApplied?: (nonce: number) => void;
 }
 
 function basename(p: string) {
@@ -109,6 +113,11 @@ export default function Composer({
   onStop,
   permissionMode = "default",
   onPermissionModeChange,
+  seedDraft = null,
+  seedNonce = 0,
+  quoteText = null,
+  quoteNonce = 0,
+  onQuoteApplied,
 }: Props) {
   const [barEpoch, setBarEpoch] = useState(0);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -230,6 +239,11 @@ export default function Composer({
       onStop={onStop}
       permissionMode={permissionMode}
       onPermissionModeChange={onPermissionModeChange}
+      seedDraft={seedDraft}
+      seedNonce={seedNonce}
+      quoteText={quoteText}
+      quoteNonce={quoteNonce}
+      onQuoteApplied={onQuoteApplied}
       onModelChange={(m) => {
         if (isNormal) {
           if (m.key === "__add_api__") {

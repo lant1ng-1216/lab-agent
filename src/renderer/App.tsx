@@ -65,7 +65,7 @@ import {
   savePermissionMode,
   type PermissionModeId,
 } from "./lib/permissionModes";
-import PermissionModal, { type PermissionAction } from "./components/PermissionModal";
+import type { PermissionAction } from "./components/PermissionModal";
 import labAppIcon from "../../build/icon.png";
 import StreamingText from "./harness/beautiful-ui/StreamingText";
 import LoadingState from "./harness/beautiful-ui/LoadingState";
@@ -130,7 +130,6 @@ interface Engine {
 }
 const ENGINES: Engine[] = [
   { id: "lab-deepseek", name: "Lab Coding", color: "#3b82f6", abbr: "L", preset: false },
-  { id: "claude-code", name: "Claude Code", color: "#d97757", abbr: "C", preset: true },
   { id: "codex", name: "Codex", color: "#10a37f", abbr: "Cx", preset: true },
   { id: "cursor", name: "Cursor", color: "#8b5cf6", abbr: "Cu", preset: true },
   { id: "opencode", name: "OpenCode", color: "#64748b", abbr: "O", preset: true },
@@ -313,6 +312,16 @@ export default function App() {
   const resizingSide = useRef<{ startX: number; startW: number } | null>(null);
   const resizingInsp = useRef<{ startX: number; startW: number } | null>(null);
   const draftHistory = useRef<string[]>([]);
+  const [composerSeedDraft, setComposerSeedDraft] = useState<string | null>(null);
+  const [composerSeedNonce, setComposerSeedNonce] = useState(0);
+  const [composerQuote, setComposerQuote] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
+
+  const queueComposerQuote = useCallback((text: string) => {
+    setComposerQuote((current) => ({ text, nonce: current.nonce + 1 }));
+  }, []);
+  const acknowledgeComposerQuote = useCallback((nonce: number) => {
+    setComposerQuote((current) => (current.nonce === nonce ? { ...current, text: "" } : current));
+  }, []);
 
   const exp = useMemo(() => experiments.find((e) => e.id === activeExp) ?? null, [experiments, activeExp]);
   const lab = exp?.lab ?? initialLab();
@@ -473,7 +482,6 @@ export default function App() {
 
   const ENGINE_BRAND_BY_ID: Record<string, string> = {
     "lab-deepseek": "lab-coding",
-    "claude-code": "claude",
     codex: "openai",
     cursor: "cursor",
     opencode: "opencode",
@@ -483,7 +491,7 @@ export default function App() {
     const id = `n-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const brand =
       (engineId && ENGINE_BRAND_BY_ID[engineId]) ||
-      (name.includes("Claude") ? "claude" : name.includes("Codex") ? "openai" : name.includes("Cursor") ? "cursor" : name.includes("OpenCode") ? "opencode" : undefined);
+      (name.includes("Codex") ? "openai" : name.includes("Cursor") ? "cursor" : name.includes("OpenCode") ? "opencode" : undefined);
     setNotices((xs) => [...xs.slice(-3), { id, title: name, body: "开发中 / 连接中 — 暂未接入，接入后可真嵌官方 CLI。", brand }]);
     window.setTimeout(() => {
       setNotices((xs) => xs.filter((n) => n.id !== id));
@@ -1079,7 +1087,7 @@ export default function App() {
     dockSend(text, undefined, { replaceUserId: userId });
   };
 
-  const withdrawUser = (userId: string) => {
+  const withdrawUser = (userId: string, text: string) => {
     if (!activeExp) return;
     const existing = experiments.find((e) => e.id === activeExp);
     const workdir = existing?.workdir ?? null;
@@ -1088,6 +1096,7 @@ export default function App() {
     const idx = msgs.findIndex((m) => m.id === userId);
     if (idx < 0) return;
     const withdrawn = msgs[idx];
+    const restoredText = text || withdrawn.content;
     const kept = msgs.slice(0, idx);
     let tip: string | null = null;
     for (let i = kept.length - 1; i >= 0; i--) {
@@ -1133,13 +1142,32 @@ export default function App() {
           engineCutBefore: tip ? null : withdrawn.content,
         });
       }
+      setComposerSeedDraft(restoredText);
+      setComposerSeedNonce((nonce) => nonce + 1);
+      showToast(kept.length === 0 ? "已撤回并恢复到输入框" : "已撤回后续对话，原文已恢复到输入框");
     })();
-    showToast(kept.length === 0 ? "已清空会话" : "已撤回该消息");
+  };
+
+  const cancelActiveCodingTurn = () => {
+    if (!activeExp) return;
+    setExperiments((xs) =>
+      xs.map((experiment) =>
+        experiment.id === activeExp
+          ? { ...experiment, coding: interruptAgentState(experiment.coding) }
+          : experiment,
+      ),
+    );
+    void window.lab?.agentCancel(activeExp);
   };
 
   const respondAgentPermission = (action: PermissionAction) => {
     const p = coding.permission;
     if (!p || !activeExp) return;
+
+    if (action.type === "cancel") {
+      cancelActiveCodingTurn();
+      return;
+    }
 
     if (action.type === "deny") {
       void window.lab?.agentPermission({
@@ -1561,19 +1589,14 @@ export default function App() {
                     setCustomApiOpen(true);
                   }}
                   busy={isNormal && dockBusy}
-                  onStop={() => {
-                    if (!activeExp) return;
-                    setExperiments((xs) =>
-                      xs.map((e) =>
-                        e.id === activeExp
-                          ? { ...e, coding: interruptAgentState(e.coding) }
-                          : e,
-                      ),
-                    );
-                    void window.lab?.agentCancel(activeExp);
-                  }}
+                  onStop={cancelActiveCodingTurn}
                   permissionMode={permissionMode}
                   onPermissionModeChange={setPermissionMode}
+                  seedDraft={composerSeedDraft}
+                  seedNonce={composerSeedNonce}
+                  quoteText={composerQuote.text}
+                  quoteNonce={composerQuote.nonce}
+                  onQuoteApplied={acknowledgeComposerQuote}
                   workdir={activeWorkspace}
                   onNeedWorkdir={() => void pickFolder("add-workspace")}
                   onRetarget={(kind) => {
@@ -1606,8 +1629,10 @@ export default function App() {
                     onAppearanceChange={setAppearance}
                     onStreamingSettled={() => setCoding((s) => commitStreamingReveal(s))}
                     onFilePreview={onFilePreview}
+                    onQuoteSelection={queueComposerQuote}
                     onResendFromUser={resendFromUser}
                     onWithdrawUser={withdrawUser}
+                    onPermissionAction={respondAgentPermission}
                   />
                   <div className="titlebar-no-drag mt-1 w-full max-w-[640px]">{composerBlock}</div>
                 </div>
@@ -1627,8 +1652,10 @@ export default function App() {
                       onAppearanceChange={setAppearance}
                       onStreamingSettled={() => setCoding((s) => commitStreamingReveal(s))}
                       onFilePreview={onFilePreview}
+                      onQuoteSelection={queueComposerQuote}
                       onResendFromUser={resendFromUser}
                       onWithdrawUser={withdrawUser}
+                      onPermissionAction={respondAgentPermission}
                     />
                   </div>
                   <div className="titlebar-no-drag relative z-[2] flex shrink-0 justify-center px-4 pb-4 pt-2">
@@ -1839,11 +1866,6 @@ export default function App() {
               )}
             </div>
           </section>
-        ) : null}
-
-        {/* Agent tool permission modal (bridge can_use_tool) */}
-        {isNormal && coding.permission ? (
-          <PermissionModal permission={coding.permission} onAction={respondAgentPermission} />
         ) : null}
 
         {/* Intervention modal */}

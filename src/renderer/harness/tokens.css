@@ -148,6 +148,40 @@ html[data-appearance="skin"] .lab-root .lab-code-body {
   line-height: 1.45;
 }
 
+/* Markdown fences use semantic, low-contrast treatments instead of one heavy card. */
+.lab-md-code {
+  background: color-mix(in srgb, var(--lab-inset) 62%, var(--lab-surface-solid) 38%);
+  border-color: var(--lab-border-soft);
+}
+
+.lab-md-code-header {
+  border-bottom: 1px solid var(--lab-border-soft);
+}
+
+/* Data is structured but not source code: retain its outline, not a filled card. */
+.lab-md-data {
+  background: transparent;
+}
+
+.lab-md-data .lab-md-code-header {
+  border-bottom: 0;
+}
+
+/* Shell transcripts get a terminal cue while staying visually quiet. */
+.lab-md-terminal {
+  border-left: 2px solid var(--lab-border-soft);
+  background: color-mix(in srgb, var(--lab-inset) 34%, transparent);
+}
+
+.lab-md-terminal-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--lab-border-soft) 70%, transparent);
+}
+
+html[data-appearance="skin"] .lab-root .lab-md-code:not(.lab-md-data),
+html[data-appearance="skin"] .lab-root .lab-md-terminal {
+  background-color: color-mix(in srgb, var(--lab-surface-solid) 92%, transparent);
+}
+
 /* Keep text metrics stable across the two desktop platforms. The previous
  * SF/PingFang-first stack made Windows controls wider or narrower depending
  * on which fallback fonts happened to be installed. */

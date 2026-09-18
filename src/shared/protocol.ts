@@ -234,9 +234,6 @@ export type AgentBridgeEvent =
       description: string;
       inputPreview: string;
       file?: string;
-      /** Epoch ms when this prompt expires (auto-deny) */
-      expiresAt?: number;
-      timeoutMs?: number;
       questions?: AskUserQuestionItem[];
     }
   | { kind: 'thinking_text'; text: string; partial?: boolean }
@@ -260,9 +257,6 @@ export type AgentBridgeEvent =
       text?: string;
     }
   | { kind: 'error'; text: string };
-
-/** Matches Lab Coding bridge permission auto-deny window */
-export const AGENT_PERMISSION_TIMEOUT_MS = 90_000;
 
 export interface AgentPermissionDecision {
   sessionKey: string;
@@ -296,8 +290,6 @@ export interface AgentPermissionPrompt {
   description: string;
   inputPreview: string;
   file?: string;
-  expiresAt?: number;
-  timeoutMs?: number;
   /** Present when tool is AskUserQuestion — show option UI instead of allow/deny */
   questions?: AskUserQuestionItem[];
 }

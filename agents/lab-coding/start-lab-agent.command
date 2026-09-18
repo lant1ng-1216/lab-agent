@@ -51,12 +51,20 @@ case "$RAW_BASE" in
 esac
 export ANTHROPIC_BASE_URL="$ENGINE_BASE"
 
-# 配置目录与本机 Claude Code 隔离
-if [ -z "${CLAUDE_CONFIG_DIR:-}" ]; then
-  CLAUDE_CONFIG_DIR="$SCRIPT_DIR/.lab-agent-config"
-fi
-mkdir -p "$CLAUDE_CONFIG_DIR"
+# Lab Agent uses one product-owned profile shared with the desktop app.
+# On macOS Electron's userData is ~/Library/Application Support/Lab Agent.
+LAB_AGENT_HOME="${LAB_AGENT_HOME:-$HOME/Library/Application Support/Lab Agent/lab-coding-config}"
+case "$LAB_AGENT_HOME" in
+  /*) ;;
+  *) LAB_AGENT_HOME="$HOME/Library/Application Support/Lab Agent/lab-coding-config" ;;
+esac
+mkdir -p "$LAB_AGENT_HOME"
+export LAB_AGENT_HOME
+# The engine still reads this legacy variable internally; force it to Lab's
+# profile and ignore any inherited Claude Code / Cowork memory redirection.
+CLAUDE_CONFIG_DIR="$LAB_AGENT_HOME"
 export CLAUDE_CONFIG_DIR
+unset CLAUDE_CODE_REMOTE_MEMORY_DIR CLAUDE_COWORK_MEMORY_PATH_OVERRIDE CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES CLAUDE_CODE_REMOTE CLAUDE_CODE_USE_COWORK_PLUGINS CLAUDE_CODE_DISABLE_AUTO_MEMORY CLAUDE_CODE_SIMPLE
 
 KEY="${DEEPSEEK_API_KEY:-${API_KEY:-${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}}}"
 PLACEHOLDER="sk-在此粘贴你的密钥"

@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   AGENT_WATCHDOG_LIMITS,
@@ -18,6 +20,10 @@ const { summarizeApiError } = require("../dist/shared/apiErrors.js");
 const { withoutApiKey } = require("../dist/shared/credentialMetadata.js");
 const { findEngineRoot } = require("../dist/main/enginePaths.js");
 const { DESKTOP_AGENT_GUIDANCE } = require("../dist/shared/desktopAgentGuidance.js");
+const {
+  labAgentMemoryGuardSettings,
+  labAgentRuntimeEnv,
+} = require("../dist/shared/labAgentRuntime.js");
 const {
   DESKTOP_RUNTIME_MARKER,
   isLikelyToolFailure,
@@ -54,10 +60,10 @@ function watchdogSnapshot(overrides = {}) {
   };
 }
 
-test("permission waits are not mistaken for generic engine silence", () => {
+test("permission waits suspend every automatic timeout until the user responds", () => {
   assert.equal(
     getAgentWatchdogStopReason(
-      watchdogSnapshot({ now: AGENT_WATCHDOG_LIMITS.hardTurnMs - 1, permissionPending: true }),
+      watchdogSnapshot({ now: AGENT_WATCHDOG_LIMITS.hardTurnMs * 4, permissionPending: true }),
     ),
     null,
   );
@@ -100,14 +106,43 @@ test("generic and non-shell tool silence use explicit, distinct limits", () => {
   );
 });
 
-test("the hard turn limit remains effective even during a permission wait", () => {
+test("the hard turn limit resumes after a pending permission is resolved", () => {
   assert.equal(
     getAgentWatchdogStopReason(watchdogSnapshot({
       now: AGENT_WATCHDOG_LIMITS.hardTurnMs,
-      permissionPending: true,
     })),
     "hard-limit",
   );
+});
+
+test("approval cards stay inline, allow custom answers, and do not expire", () => {
+  const card = fs.readFileSync(path.join(__dirname, "../src/renderer/components/PermissionModal.tsx"), "utf8");
+  const bridge = fs.readFileSync(path.join(__dirname, "../src/main/labCodingBridge.ts"), "utf8");
+  assert.match(card, /<textarea/);
+  assert.match(card, /取消任务/);
+  assert.doesNotMatch(card, /absolute inset-0 z-50/);
+  assert.doesNotMatch(bridge, /PERMISSION_TIMEOUT|Permission timed out/);
+});
+
+test("user messages can open inline editing and withdrawn text returns to the composer", () => {
+  const chat = fs.readFileSync(path.join(__dirname, "../src/renderer/components/NormalChatView.tsx"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "../src/renderer/App.tsx"), "utf8");
+  const composer = fs.readFileSync(path.join(__dirname, "../src/renderer/components/Composer.tsx"), "utf8");
+  assert.match(chat, /aria-label=\{canRevise \? "点击编辑这条消息"/);
+  assert.match(chat, /onWithdraw\(msg\.id, msg\.content\)/);
+  assert.match(app, /setComposerSeedDraft\(restoredText\)/);
+  assert.match(composer, /seedDraft=\{seedDraft\}/);
+});
+
+test("quoted assistant excerpts are visually separated from the user's follow-up", () => {
+  const chat = fs.readFileSync(path.join(__dirname, "../src/renderer/components/NormalChatView.tsx"), "utf8");
+  const prompt = fs.readFileSync(path.join(__dirname, "../src/renderer/harness/beautiful-ui/PromptBar.tsx"), "utf8");
+  assert.match(prompt, /map\(\(line\) => `> \$\{line\}`\)/);
+  assert.match(chat, /function parseUserMessageSegments/);
+  assert.match(chat, /引用内容/);
+  assert.match(chat, /whitespace-pre-wrap break-words/);
+  assert.match(chat, /<UserMessageContent text=\{msg\.content\} \/>/);
+  assert.match(chat, /value=\{draft\}/);
 });
 
 test("avatar leaves work animation as soon as the agent turn is complete", () => {
@@ -194,6 +229,42 @@ test("GitHub inspection guidance keeps clone steps visible and separate", () => 
   assert.match(DESKTOP_AGENT_GUIDANCE, /do not clone it again or create a nested copy/i);
   assert.match(DESKTOP_AGENT_GUIDANCE, /Do not pipe long-running network commands through head or tail/i);
   assert.match(DESKTOP_AGENT_GUIDANCE, /Keep authentication checks separate from fetches/i);
+});
+
+test("Lab Agent runtime ignores inherited Claude memory locations", () => {
+  const env = labAgentRuntimeEnv({
+    CLAUDE_CONFIG_DIR: "/Users/alice/.claude",
+    CLAUDE_CODE_REMOTE_MEMORY_DIR: "/tmp/claude-memory",
+    CLAUDE_COWORK_MEMORY_PATH_OVERRIDE: "/tmp/cowork-memory",
+    CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES: "look in Claude memory",
+    CLAUDE_CODE_REMOTE: "true",
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    CLAUDE_CODE_SIMPLE: "1",
+    DEEPSEEK_API_KEY: "test-key",
+  }, "/Users/alice/Library/Application Support/Lab Agent/lab-coding-config");
+  assert.equal(env.LAB_AGENT_HOME, "/Users/alice/Library/Application Support/Lab Agent/lab-coding-config");
+  assert.equal(env.CLAUDE_CONFIG_DIR, env.LAB_AGENT_HOME);
+  assert.equal(env.DEEPSEEK_API_KEY, "test-key");
+  assert.equal(Object.hasOwn(env, "CLAUDE_CODE_REMOTE_MEMORY_DIR"), false);
+  assert.equal(Object.hasOwn(env, "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"), false);
+  assert.equal(Object.hasOwn(env, "CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES"), false);
+  assert.equal(Object.hasOwn(env, "CLAUDE_CODE_REMOTE"), false);
+  assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY"), false);
+  assert.equal(Object.hasOwn(env, "CLAUDE_CODE_SIMPLE"), false);
+
+  const settings = JSON.parse(labAgentMemoryGuardSettings());
+  assert.ok(settings.permissions.deny.includes("Read(~/.claude/**)"));
+  assert.ok(settings.permissions.deny.includes("Grep(~/.claude/**)"));
+  assert.ok(settings.permissions.deny.includes("Glob(~/.claude/**)"));
+  assert.ok(settings.permissions.deny.includes("Bash(*.claude*)"));
+  assert.ok(settings.permissions.deny.includes("PowerShell(*.claude*)"));
+  assert.deepEqual(settings.sandbox.filesystem.denyRead, ["~/.claude"]);
+});
+
+test("Lab Agent desktop guidance establishes product-owned memory and identity", () => {
+  assert.match(DESKTOP_AGENT_GUIDANCE, /standalone product/i);
+  assert.match(DESKTOP_AGENT_GUIDANCE, /do not search, read, or import/i);
+  assert.match(DESKTOP_AGENT_GUIDANCE, /Lab Agent profile and \.lab-agent project memory/);
 });
 
 test("runtime diagnostics identify the source build and sanitize secrets", () => {

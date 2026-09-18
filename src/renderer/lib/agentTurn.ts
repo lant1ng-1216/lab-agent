@@ -93,8 +93,6 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
           description: event.description,
           inputPreview: event.inputPreview,
           file: event.file,
-          expiresAt: event.expiresAt,
-          timeoutMs: event.timeoutMs,
           questions: event.questions,
         },
       };

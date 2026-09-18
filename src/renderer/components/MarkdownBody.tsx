@@ -26,6 +26,84 @@ type MdBlock =
   | { type: "code"; lang?: string; code: string; open?: boolean }
   | { type: "hr" };
 
+type FencePresentation =
+  | { kind: "tree" }
+  | { kind: "terminal" }
+  | { kind: "plain"; label?: string }
+  | { kind: "code" | "data"; label: string };
+
+const TERMINAL_LANGUAGES = new Set([
+  "bash", "sh", "shell", "zsh", "fish", "console", "terminal", "shellsession",
+  "powershell", "pwsh", "ps1", "cmd", "bat", "batch",
+]);
+const PLAIN_LANGUAGES = new Set(["text", "txt", "plain", "plaintext", "output", "log"]);
+const DATA_LANGUAGES = new Set([
+  "json", "jsonc", "yaml", "yml", "toml", "xml", "csv", "diff", "patch", "md", "markdown",
+]);
+const DATA_LABELS: Record<string, string> = {
+  json: "JSON",
+  jsonc: "JSONC",
+  yaml: "YAML",
+  yml: "YAML",
+  toml: "TOML",
+  xml: "XML",
+  csv: "CSV",
+  diff: "Diff",
+  patch: "Patch",
+  md: "Markdown",
+  markdown: "Markdown",
+};
+const LANGUAGE_LABELS: Record<string, string> = {
+  js: "JavaScript",
+  javascript: "JavaScript",
+  jsx: "JSX",
+  ts: "TypeScript",
+  typescript: "TypeScript",
+  tsx: "TSX",
+  py: "Python",
+  python: "Python",
+  rb: "Ruby",
+  rs: "Rust",
+  go: "Go",
+  java: "Java",
+  cpp: "C++",
+  csharp: "C#",
+  html: "HTML",
+  css: "CSS",
+  sql: "SQL",
+};
+
+function isFileTree(text: string): boolean {
+  const connectorRows = text.split(/\r?\n/).filter((line) =>
+    /^\s*(?:(?:│|\|)\s*)*(?:├──|└──|\|--|`--|\\--)/.test(line),
+  );
+  return connectorRows.length >= 2;
+}
+
+function classifyFence(lang: string | undefined, text: string): FencePresentation {
+  if (isFileTree(text)) return { kind: "tree" };
+
+  const language = lang?.trim().split(/\s+/, 1)[0].toLowerCase();
+  if (language === "tree") return { kind: "tree" };
+  if (
+    (language && TERMINAL_LANGUAGES.has(language)) ||
+    /^\s*(?:[$%]\s+|PS\s+[^\n>]+>\s*)/m.test(text)
+  ) {
+    return { kind: "terminal" };
+  }
+  if (!language || PLAIN_LANGUAGES.has(language)) {
+    const label = language === "output" ? "输出" : language === "log" ? "日志" : undefined;
+    return { kind: "plain", label };
+  }
+  if (DATA_LANGUAGES.has(language)) {
+    return { kind: "data", label: DATA_LABELS[language] ?? language.toUpperCase() };
+  }
+  return {
+    kind: "code",
+    label: LANGUAGE_LABELS[language] ?? language,
+  };
+}
+
 function isTableSep(line: string): boolean {
   return /^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/.test(line) && /-+/.test(line);
 }
@@ -45,7 +123,7 @@ function splitBlocks(src: string): MdBlock[] {
     const line = lines[i];
 
     if (line.startsWith("```")) {
-      const lang = line.slice(3).trim() || undefined;
+      const lang = line.slice(3).trim().split(/\s+/, 1)[0] || undefined;
       const body: string[] = [];
       i += 1;
       let closed = false;
@@ -223,20 +301,56 @@ function Block({ block, streaming }: { block: MdBlock; streaming?: boolean }) {
 
   if (block.type === "code") {
     const open = Boolean(block.open && streaming);
-    return (
-      <pre
-        className={`overflow-x-auto rounded-[10px] border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] px-3 py-2.5 font-[var(--lab-mono)] text-[11.5px] leading-[1.55] text-[var(--lab-ink-2)] ${
-          open ? "opacity-90" : ""
-        }`}
-      >
-        {block.lang || open ? (
-          <div className="mb-1.5 text-[10px] tracking-wide text-[var(--lab-ink-3)]">
-            {block.lang || "code"}
-            {open ? " · …" : ""}
-          </div>
-        ) : null}
+    const presentation = classifyFence(block.lang, block.code);
+    const pre = (
+      <pre className="overflow-x-auto whitespace-pre font-[var(--lab-mono)] text-[11.5px] leading-[1.6] text-[var(--lab-ink)]">
         <code>{block.code}</code>
       </pre>
+    );
+
+    if (presentation.kind === "tree") {
+      return (
+        <pre className="lab-md-tree overflow-x-auto whitespace-pre py-0.5 font-[var(--lab-mono)] text-[12px] leading-[1.55] text-[var(--lab-ink-2)]">
+          <code>{block.code}</code>
+        </pre>
+      );
+    }
+
+    if (presentation.kind === "plain") {
+      return (
+        <div className="lab-md-plain">
+          {presentation.label ? (
+            <div className="mb-1 text-[10px] font-medium tracking-wide text-[var(--lab-ink-3)]">
+              {presentation.label}
+            </div>
+          ) : null}
+          {pre}
+        </div>
+      );
+    }
+
+    if (presentation.kind === "terminal") {
+      return (
+        <div className={`lab-md-terminal overflow-hidden rounded-[8px] ${open ? "opacity-90" : ""}`}>
+          <div className="lab-md-terminal-header px-3 py-1 text-[10px] font-medium text-[var(--lab-ink-3)]">
+            终端
+            {open ? " · 运行中" : ""}
+          </div>
+          <div className="px-3 py-2.5">{pre}</div>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`lab-md-code ${presentation.kind === "data" ? "lab-md-data" : ""} overflow-hidden rounded-[8px] border ${open ? "opacity-90" : ""}`}>
+        <div className="lab-md-code-header flex items-center gap-2 px-3 py-1">
+          <span className="font-[var(--lab-mono)] text-[9.5px] font-medium tracking-wide text-[var(--lab-ink-3)]">
+            {presentation.label}
+          </span>
+          {open ? <span className="text-[10px] text-[var(--lab-ink-3)]">生成中</span> : null}
+        </div>
+        <div className="px-3 py-2">{pre}</div>
+      </div>
     );
   }
 

@@ -2,15 +2,17 @@ import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { join } from 'path'
 
-// Memoized: 150+ callers, many on hot paths. Keyed off CLAUDE_CONFIG_DIR so
-// tests that change the env var get a fresh value without explicit cache.clear.
+// Memoized: 150+ callers, many on hot paths. Lab Agent's explicit home wins;
+// CLAUDE_CONFIG_DIR remains a compatibility fallback for engine-only tests.
 export const getClaudeConfigHomeDir = memoize(
   (): string => {
     return (
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+      process.env.LAB_AGENT_HOME ??
+      process.env.CLAUDE_CONFIG_DIR ??
+      join(homedir(), '.claude')
     ).normalize('NFC')
   },
-  () => process.env.CLAUDE_CONFIG_DIR,
+  () => `${process.env.LAB_AGENT_HOME ?? ''}\0${process.env.CLAUDE_CONFIG_DIR ?? ''}`,
 )
 
 export function getTeamsDir(): string {

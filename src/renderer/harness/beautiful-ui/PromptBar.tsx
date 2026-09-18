@@ -181,6 +181,9 @@ export default function PromptBar({
   onPermissionModeChange,
   seedDraft = null,
   seedNonce = 0,
+  quoteText = null,
+  quoteNonce = 0,
+  onQuoteApplied,
 }: {
   variant?: string;
   /** the self-running walkthrough; turn off when embedding in a real surface */
@@ -211,6 +214,10 @@ export default function PromptBar({
   /** Inject text (e.g. edit & resend after Stop) */
   seedDraft?: string | null;
   seedNonce?: number;
+  /** Append a quoted assistant excerpt without replacing the user's current draft. */
+  quoteText?: string | null;
+  quoteNonce?: number;
+  onQuoteApplied?: (nonce: number) => void;
 }) {
   const MODELS = models;
   const SOURCES = sources;
@@ -402,6 +409,30 @@ export default function PromptBar({
     }, 30);
     return () => window.clearTimeout(t);
   }, [seedNonce, seedDraft]);
+
+  useEffect(() => {
+    if (!quoteNonce || quoteText == null || !quoteText.trim()) return;
+    const quote = quoteText
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => `> ${line}`)
+      .join("\n");
+    setDraft((current) => {
+      const base = current.trimEnd();
+      return `${base ? `${base}\n\n` : ""}${quote}\n\n`;
+    });
+    setExpanded(true);
+    setDismissed(false);
+    window.setTimeout(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+      }
+    }, 30);
+    onQuoteApplied?.(quoteNonce);
+  }, [quoteNonce, quoteText, onQuoteApplied]);
 
   /* Grow textarea; only leave single-row when content needs wrap / newlines.
    * Empty draft always collapses — avoids “mysterious” double-row height. */
