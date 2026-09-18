@@ -27,12 +27,15 @@ export default function SupervisorApp() {
   const [approval, setApproval] = useState<{ headline: string; detail: string } | null>(null);
   const [draft, setDraft] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [hasSavedKey, setHasSavedKey] = useState(false);
+  const [keySaveStatus, setKeySaveStatus] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const pendingStream = useRef(false);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
     void window.lab.getMirrorSnapshot().then(setMirror);
+    void window.lab.getSettings().then((settings) => setHasSavedKey(settings.hasKey));
     const offChat = window.lab.onChatStream((msg) => {
       if (msg.role === "user") {
         setMessages((prev) => [...prev, msg]);
@@ -166,8 +169,11 @@ export default function SupervisorApp() {
             <input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="DeepSeek Key"
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                setKeySaveStatus("");
+              }}
+              placeholder={hasSavedKey ? "本机已有加密 Key；输入新 Key 可替换" : "DeepSeek Key"}
               className="min-w-0 flex-1 rounded-md border border-[var(--lab-border)] bg-[var(--lab-inset)] px-1.5 py-1 text-[10.5px] text-[var(--lab-ink-2)] outline-none"
             />
             <button
@@ -175,11 +181,16 @@ export default function SupervisorApp() {
               className="shrink-0 rounded-md px-1.5 py-1 text-[10.5px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
               onClick={() => {
                 if (!apiKey.trim()) return;
-                void window.lab.setApiKey(apiKey.trim());
-                setApiKey("");
+                void window.lab.setApiKey(apiKey.trim()).then((saved) => {
+                  setKeySaveStatus(saved ? "已加密保存" : "系统凭据加密不可用，未保存");
+                  if (saved) {
+                    setHasSavedKey(true);
+                    setApiKey("");
+                  }
+                });
               }}
             >
-              保存
+              {keySaveStatus || "保存"}
             </button>
           </div>
         }

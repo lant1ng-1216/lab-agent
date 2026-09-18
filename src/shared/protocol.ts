@@ -31,17 +31,22 @@ export function redactSensitiveText(value: string): string {
 
 export type LoopStatus = 'idle' | 'thinking' | 'streaming' | 'tool' | 'waiting' | 'error';
 
-/** One API turn's token usage (from stream-json result.usage) */
+/** Usage attached to one API response, or accumulated across one Agent task. */
 export interface TokenUsageSnapshot {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** OpenAI prompt_tokens already includes cached tokens; Anthropic input_tokens does not. */
+  inputIncludesCache?: boolean;
+  usageFormat?: 'anthropic' | 'openai';
 }
 
 /** Running totals for one Desktop section (Experiment) */
 export interface SectionTokenTotals {
   inputTokens: number;
+  /** Canonical prompt total after respecting whether inputTokens already includes cache. */
+  totalInputTokens?: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
@@ -63,8 +68,12 @@ export interface ChatMessage {
   error?: boolean;
   /** Lab Code JSONL message.uuid — used with --resume-session-at on edit/withdraw */
   engineUuid?: string;
-  /** This turn's token usage (assistant only) */
+  /** Cumulative token processing across the Agent task's internal API requests. */
   usage?: TokenUsageSnapshot;
+  /** Largest single-request input context observed during this Agent task. */
+  peakContextUsage?: TokenUsageSnapshot;
+  /** Number of unique model responses included when measuring the task's peak context. */
+  contextRequestCount?: number;
 }
 
 /** Coding transcript entry mirrored TO supervisor (read-only) */
@@ -148,7 +157,7 @@ export const IPC = {
   AGENT_EVENT: 'lab:agent-event',
   /** Respond to a can_use_tool permission prompt from Lab Coding */
   AGENT_PERMISSION: 'lab:agent-permission',
-  /** Bootstrap shell API from agents/lab-coding/lab-agent.env */
+  /** Report local API credential presence and non-secret runtime defaults. */
   GET_LAB_ENV: 'lab:get-lab-env',
 } as const;
 
@@ -238,8 +247,11 @@ export type AgentBridgeEvent =
       isError?: boolean;
       /** Latest assistant message.uuid from this turn (for edit/rewind) */
       messageUuid?: string;
-      /** Aggregated usage for this turn */
+      /** Aggregated token processing across internal API requests for this Agent task. */
       usage?: TokenUsageSnapshot;
+      /** Largest single-request input context observed during this task. */
+      peakContextUsage?: TokenUsageSnapshot;
+      contextRequestCount?: number;
     }
   | {
       kind: 'compact';

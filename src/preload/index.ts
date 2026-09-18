@@ -31,7 +31,7 @@ contextBridge.exposeInMainWorld('lab', {
   getLabEnv: () =>
     ipcRenderer.invoke(IPC.GET_LAB_ENV) as Promise<{
       ok: boolean;
-      apiKey: string;
+      credentialStored: boolean;
       baseUrl: string;
       model: string;
     }>,

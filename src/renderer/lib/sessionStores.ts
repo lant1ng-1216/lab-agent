@@ -26,8 +26,10 @@ export interface Experiment {
   engineCutBefore?: string | null;
   /** Cumulative token usage for this section */
   tokenTotals?: import("@shared/protocol").SectionTokenTotals | null;
-  /** Latest turn usage (context fill %) */
-  lastTurnUsage?: import("@shared/protocol").TokenUsageSnapshot | null;
+  /** Peak single-request context seen in the most recently completed Agent task. */
+  lastPeakContextUsage?: import("@shared/protocol").TokenUsageSnapshot | null;
+  /** Unique provider response messages used to calculate that task's context peak. */
+  lastContextRequestCount?: number;
   nodes: LabNodeKind[];
   lab: AgentState;
   coding: AgentState;

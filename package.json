@@ -1,6 +1,6 @@
 {
   "name": "lab-agent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Lab Agent — open-source coding agent (Lab Code engine + desktop shell)",
   "author": "Lab Agent",
@@ -11,6 +11,7 @@
     "dev": "node scripts/dev.mjs",
     "desktop": "node scripts/dev.mjs desktop",
     "build": "tsc -p tsconfig.json && node scripts/copy-lab-coding.mjs && vite build",
+    "test": "npm run build && node --test tests/regressions.test.cjs",
     "prepare:engines": "node scripts/prepare-engines.mjs",
     "dist": "node scripts/dist.mjs",
     "verify:mac": "node scripts/verify-mac-sign.mjs",

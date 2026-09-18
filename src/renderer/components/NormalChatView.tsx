@@ -8,12 +8,18 @@ import ThinkingAdapter from "./ThinkingAdapter";
 import ThinkingBand from "./ThinkingBand";
 import MarkdownBody from "./MarkdownBody";
 import type { FilePreviewPayload } from "./FileInspectSidebar";
-import BloubAvatar, { type BloubMood } from "../mascot/bloub/BloubAvatar";
+import BloubAvatar, { type BloubMood, type BloubMotion } from "../mascot/bloub/BloubAvatar";
 import { UserBubble } from "@harness";
 import { toolsToChips, toolsToThinkingRows } from "../lib/agentTurn";
 import { TurnTokenFooter } from "./TokenUsageMeter";
 import AppearancePickCards from "./AppearancePickCards";
 import type { AppearanceState } from "../lib/appearance";
+import { avatarMotionForTurn, isAgentTurnWorking } from "@shared/agentPresentation";
+import {
+  CHAT_FOLLOW_RESUME_DELAY_MS,
+  isIntentionalChatBrowse,
+  isNearChatBottom,
+} from "@shared/chatScroll";
 
 export const NORMAL_SUGGESTIONS = [
   { title: "从设计稿搭 UI", desc: "把一帧设计落到这个仓库里的可运行界面。" },
@@ -30,6 +36,8 @@ type Props = {
   sessionName: string;
   sessionKey?: string | null;
   emptyHero?: boolean;
+  /** Space reserved below the scroll content for the floating composer. */
+  bottomInset?: number;
   workdir?: string | null;
   appearance?: AppearanceState;
   onAppearanceChange?: (next: AppearanceState) => void;
@@ -63,6 +71,8 @@ function resolvePath(workdir: string | null | undefined, file: string): string {
 
 function bloubMood(state: AgentState): BloubMood {
   if (state.status === "error") return "error";
+  // The engine has finished even if the typewriter is still revealing its final text.
+  if (state.streamComplete) return "idle";
   if (state.status === "waiting" || state.permission) return "waiting";
   if (state.status === "tool" || state.tools?.some((t) => t.state === "running")) return "tool";
   if (state.status === "thinking" || state.thinkingText) return "thinking";
@@ -244,11 +254,13 @@ function MessageTools({
 function AssistantShell({
   children,
   mood = "idle",
+  motion = "breathe",
   showAvatar = false,
   listenToken = 0,
 }: {
   children: ReactNode;
   mood?: BloubMood;
+  motion?: BloubMotion;
   /** Only the live turn or the latest assistant row should show Bloub. */
   showAvatar?: boolean;
   listenToken?: number;
@@ -260,7 +272,7 @@ function AssistantShell({
           <BloubAvatar
             size={AVATAR}
             mood={mood}
-            motion="full"
+            motion={motion}
             follow
             interactive
             listenToken={listenToken}
@@ -324,6 +336,7 @@ export default function NormalChatView({
   state,
   sessionName,
   emptyHero = false,
+  bottomInset = 144,
   workdir = null,
   appearance,
   onAppearanceChange,
@@ -333,49 +346,130 @@ export default function NormalChatView({
   onResendFromUser,
   onWithdrawUser,
 }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   const scrollFrame = useRef<number | null>(null);
+  const followResumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const manualBrowse = useRef(false);
+  const lastTouchY = useRef<number | null>(null);
   const shouldAutoScroll = useRef(true);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const tools = state.tools ?? [];
   const thinkingText = state.thinkingText?.trim() ?? "";
   const archivedOnStream = state.streaming?.thinking?.trim() ?? "";
   const liveThinking = thinkingText || archivedOnStream;
+  const toolsWorking = tools.some((tool) => tool.state === "running");
   const [listenToken, setListenToken] = useState(0);
   const prevMsgLen = useRef(state.messages.length);
+
+  const clearFollowResumeTimer = useCallback(() => {
+    if (followResumeTimer.current !== null) {
+      clearTimeout(followResumeTimer.current);
+      followResumeTimer.current = null;
+    }
+  }, []);
+
+  const scheduleAutoScroll = useCallback(() => {
+    if (!shouldAutoScroll.current) return;
+    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      const container = scrollContainerRef.current;
+      if (container && shouldAutoScroll.current) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }, []);
+
+  const scrollToLatest = useCallback(() => {
+    clearFollowResumeTimer();
+    manualBrowse.current = false;
+    shouldAutoScroll.current = true;
+    setShowScrollToBottom(false);
+    const container = scrollContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [clearFollowResumeTimer]);
 
   useEffect(() => {
     const len = state.messages.length;
     if (len > prevMsgLen.current) {
       const last = state.messages[len - 1];
-      if (last?.role === "user") setListenToken((n) => n + 1);
+      if (last?.role === "user") {
+        clearFollowResumeTimer();
+        manualBrowse.current = false;
+        setListenToken((n) => n + 1);
+        shouldAutoScroll.current = true;
+        setShowScrollToBottom(false);
+        scheduleAutoScroll();
+      }
     }
     prevMsgLen.current = len;
-  }, [state.messages]);
+  }, [state.messages, scheduleAutoScroll, clearFollowResumeTimer]);
+
+  const turnWorking = isAgentTurnWorking({
+    status: state.status,
+    streamComplete: Boolean(state.streamComplete),
+    hasStreamingMessage: Boolean(state.streaming),
+    hasRunningTool: toolsWorking,
+    hasPermission: Boolean(state.permission),
+  });
+  const busy = turnWorking;
+
+  const scheduleFollowResume = useCallback(() => {
+    clearFollowResumeTimer();
+    if (!turnWorking || manualBrowse.current) return;
+
+    followResumeTimer.current = setTimeout(() => {
+      followResumeTimer.current = null;
+      const container = scrollContainerRef.current;
+      if (!container || manualBrowse.current) return;
+      if (isIntentionalChatBrowse(container)) {
+        manualBrowse.current = true;
+        return;
+      }
+      // Re-arm only; the next streamed content/resize will perform the scroll.
+      shouldAutoScroll.current = true;
+    }, CHAT_FOLLOW_RESUME_DELAY_MS);
+  }, [turnWorking, clearFollowResumeTimer]);
+
+  const handleManualScrollInput = useCallback(
+    (container: HTMLDivElement, deltaY: number) => {
+      if (deltaY === 0) return;
+
+      const metrics = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+        clientHeight: container.clientHeight,
+      };
+      if (isNearChatBottom(metrics) && deltaY > 0) {
+        clearFollowResumeTimer();
+        manualBrowse.current = false;
+        shouldAutoScroll.current = true;
+        setShowScrollToBottom(false);
+        return;
+      }
+
+      shouldAutoScroll.current = false;
+      setShowScrollToBottom(true);
+      if (manualBrowse.current || isIntentionalChatBrowse(metrics, deltaY)) {
+        clearFollowResumeTimer();
+        manualBrowse.current = true;
+        return;
+      }
+
+      scheduleFollowResume();
+    },
+    [clearFollowResumeTimer, scheduleFollowResume],
+  );
 
   useEffect(() => {
-    // A newly appended row should bring the conversation back to the live
-    // edge; after that, respect a user who scrolls upward.
-    shouldAutoScroll.current = true;
-  }, [state.messages.length]);
-
-  const busy =
-    state.status === "thinking" ||
-    state.status === "streaming" ||
-    state.status === "tool" ||
-    state.status === "waiting" ||
-    Boolean(state.streaming && !state.streamComplete);
+    if (!turnWorking) clearFollowResumeTimer();
+  }, [turnWorking, clearFollowResumeTimer]);
   const empty =
     state.messages.length === 0 && !busy && tools.length === 0 && !state.permission && !liveThinking;
 
-  const toolsWorking = tools.some((t) => t.state === "running");
-  const turnWorking =
-    toolsWorking ||
-    Boolean(state.streaming && !state.streamComplete) ||
-    state.status === "tool" ||
-    state.status === "thinking" ||
-    state.status === "waiting";
-
   const showLoading =
+    !state.streamComplete &&
     state.status === "thinking" &&
     !state.streaming?.content &&
     tools.length === 0 &&
@@ -434,27 +528,35 @@ export default function NormalChatView({
 
   useEffect(() => {
     if (empty || !shouldAutoScroll.current) return;
-    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
-    scrollFrame.current = requestAnimationFrame(() => {
-      scrollFrame.current = null;
-      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-    });
-    return () => {
-      if (scrollFrame.current !== null) {
-        cancelAnimationFrame(scrollFrame.current);
-        scrollFrame.current = null;
-      }
-    };
+    scheduleAutoScroll();
   }, [
     empty,
+    bottomInset,
     state.messages.length,
-    streamText.length,
+    streamText,
     state.status,
-    tools.length,
-    toolsWorking,
+    tools,
     liveThinking.length,
     state.permission?.requestId,
+    scheduleAutoScroll,
   ]);
+
+  useEffect(() => {
+    const viewport = scrollContainerRef.current;
+    const content = scrollContentRef.current;
+    if (!viewport || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => scheduleAutoScroll());
+    observer.observe(viewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scheduleAutoScroll]);
+
+  useEffect(() => {
+    return () => {
+      clearFollowResumeTimer();
+      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    };
+  }, [clearFollowResumeTimer]);
 
   if (empty || emptyHero) {
     return (
@@ -500,14 +602,53 @@ export default function NormalChatView({
   }
 
   return (
-    <div
-      className="h-full min-h-0 overflow-y-auto px-4 pb-4 pt-4"
-      onScroll={(event) => {
-        const el = event.currentTarget;
-        shouldAutoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
-      }}
-    >
-      <div className="mx-auto w-full max-w-[var(--lab-chat-max,920px)] space-y-4 pl-2 pr-3 sm:pl-3 sm:pr-4">
+    <div className="relative h-full min-h-0">
+      <div
+        ref={scrollContainerRef}
+        className="h-full min-h-0 overflow-y-auto px-4 pt-4"
+        style={{ paddingBottom: `${Math.max(16, bottomInset)}px` }}
+        onWheel={(event) => {
+          handleManualScrollInput(event.currentTarget, event.deltaY);
+        }}
+        onTouchStart={(event) => {
+          lastTouchY.current = event.touches[0]?.clientY ?? null;
+        }}
+        onTouchMove={(event) => {
+          const touchY = event.touches[0]?.clientY;
+          const previousTouchY = lastTouchY.current;
+          lastTouchY.current = touchY ?? null;
+          if (touchY !== undefined && previousTouchY !== null) {
+            handleManualScrollInput(event.currentTarget, previousTouchY - touchY);
+          }
+        }}
+        onTouchEnd={() => {
+          lastTouchY.current = null;
+        }}
+        onTouchCancel={() => {
+          lastTouchY.current = null;
+        }}
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          const atBottom = isNearChatBottom(el);
+          if (atBottom) {
+            clearFollowResumeTimer();
+            manualBrowse.current = false;
+            shouldAutoScroll.current = true;
+          } else {
+            if (shouldAutoScroll.current) {
+              // Scrollbar/keyboard scrolling may not produce a wheel/touch event.
+              clearFollowResumeTimer();
+              manualBrowse.current = true;
+            }
+            shouldAutoScroll.current = false;
+          }
+          setShowScrollToBottom(!atBottom);
+        }}
+      >
+        <div
+          ref={scrollContentRef}
+          className="mx-auto w-full max-w-[var(--lab-chat-max,920px)] space-y-4 pl-2 pr-3 sm:pl-3 sm:pr-4"
+        >
           <div className="mb-1 px-1 text-[11px] text-[var(--lab-ink-3)]" style={{ paddingLeft: AVATAR_COL + 12 }}>
             {sessionName}
           </div>
@@ -540,7 +681,12 @@ export default function NormalChatView({
 
           {liveTurn ? (
             <div style={{ animation: "fade-up 280ms cubic-bezier(0.23,1,0.32,1) both" }}>
-              <AssistantShell mood={mood} showAvatar listenToken={listenToken}>
+              <AssistantShell
+                mood={mood}
+                motion={avatarMotionForTurn(turnWorking)}
+                showAvatar
+                listenToken={listenToken}
+              >
                 {showLoading ? (
                   <LoadingState variant="Drive" label={state.statusLabel || "Lab Agent 思考中"} />
                 ) : null}
@@ -554,7 +700,7 @@ export default function NormalChatView({
                   <ThinkingAdapter
                     variant="Coding"
                     controlled
-                    working={toolsWorking || state.status === "waiting" || state.status === "tool"}
+                    working={turnWorking}
                     label={
                       state.status === "waiting"
                         ? "等待批准…"
@@ -588,13 +734,26 @@ export default function NormalChatView({
                     onDone={onStreamingSettled}
                   />
                 ) : null}
-                {state.streamComplete ? <TurnTokenFooter usage={state.streaming?.usage} /> : null}
+                {state.streamComplete ? (
+                  <TurnTokenFooter usage={state.streaming?.usage} />
+                ) : null}
               </AssistantShell>
             </div>
           ) : null}
 
-          <div ref={endRef} />
+        </div>
       </div>
+      {showScrollToBottom ? (
+        <button
+          type="button"
+          onClick={scrollToLatest}
+          className="absolute left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--lab-border)] bg-[var(--lab-surface-solid)] px-3 py-1.5 text-[11px] text-[var(--lab-ink-2)] shadow-md transition-colors hover:text-[var(--lab-ink)]"
+          style={{ bottom: `${Math.max(8, bottomInset - 8)}px` }}
+          aria-label="滚动到最新消息"
+        >
+          ↓ 回到底部
+        </button>
+      ) : null}
     </div>
   );
 }

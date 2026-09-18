@@ -42,7 +42,7 @@ declare global {
         updatedInput?: Record<string, unknown>;
         setMode?: string;
       }) => Promise<boolean>;
-      getLabEnv: () => Promise<{ ok: boolean; apiKey: string; baseUrl: string; model: string }>;
+      getLabEnv: () => Promise<{ ok: boolean; credentialStored: boolean; baseUrl: string; model: string }>;
       onAgentEvent: (cb: (sessionKey: string, event: AgentBridgeEvent) => void) => () => void;
       sendChat: (agent: "supervisor" | "coding", text: string) => Promise<void>;
       getMirrorSnapshot: () => Promise<CodingMirrorEvent[]>;

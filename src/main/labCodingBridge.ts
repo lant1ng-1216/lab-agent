@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import {
@@ -9,7 +10,16 @@ import {
   type ApiProtocol,
   type TokenUsageSnapshot,
 } from '../shared/protocol'
+import {
+  contextTokensUsed,
+  parseTokenUsageSnapshot,
+  peakContextUsage as choosePeakContextUsage,
+} from '../shared/modelContext'
+import { AGENT_WATCHDOG_LIMITS, getAgentWatchdogStopReason } from '../shared/agentWatchdog'
+import { DESKTOP_AGENT_GUIDANCE } from '../shared/desktopAgentGuidance'
+import { DESKTOP_RUNTIME_MARKER, isLikelyToolFailure, sanitizeDesktopDiagnostic } from '../shared/desktopRuntime'
 import { isAskUserQuestionTool, shouldAutoAllowTool } from '../shared/permissionPolicy'
+import { engineBinaryName, engineRootCandidates, findEngineRoot } from './enginePaths'
 
 export type BridgeEvent =
   | { kind: 'status'; text: string }
@@ -50,6 +60,8 @@ export type BridgeEvent =
       isError?: boolean
       messageUuid?: string
       usage?: TokenUsageSnapshot
+      peakContextUsage?: TokenUsageSnapshot
+      contextRequestCount?: number
     }
   | {
       kind: 'compact'
@@ -77,8 +89,6 @@ export type PromptRequest = {
 }
 
 const PERMISSION_TIMEOUT_MS = AGENT_PERMISSION_TIMEOUT_MS
-/** Only while a turn is in-flight (tools / waiting) — idle between turns is OK */
-const BUSY_IDLE_TIMEOUT_MS = 90_000
 
 function normalizeRuntimeBase(base?: string): string {
   return String(base || '')
@@ -130,43 +140,24 @@ type SessionState = {
   spawnedBaseUrl?: string
   /** True while waiting for the current turn's result */
   turnBusy: boolean
+  turnStartedAt: number
   tools: Map<string, Extract<BridgeEvent, { kind: 'tool' }>>
+  toolStartedAt: Map<string, number>
   pendingPermInput: Map<string, Record<string, unknown>>
   permTimers: Map<string, ReturnType<typeof setTimeout>>
   lastActivityAt: number
   idleTimer?: ReturnType<typeof setInterval>
   assistantAccum: string
   thinkingAccum: string
+  /** Per-response usage, deduplicated by provider message id. */
+  apiResponseUsage: Map<string, TokenUsageSnapshot>
+  latestRequestUsage?: TokenUsageSnapshot
+  peakRequestUsage?: TokenUsageSnapshot
   /** Skip full assistant text when stream_event deltas already streamed */
   turnHadPartials: boolean
   turnHadThinkingPartials: boolean
   /** Last assistant JSONL uuid seen this turn */
   lastAssistantUuid?: string
-}
-
-function engineBinaryName(): string {
-  return process.platform === 'win32' ? 'cli-dev.exe' : 'cli-dev'
-}
-
-function resolveLabCodingRoot(): string {
-  const candidates = [
-    // Packaged desktop: electron-builder extraResources
-    typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'lab-coding') : '',
-    path.resolve(__dirname, '../../../agents/lab-coding'),
-    path.resolve(process.cwd(), 'agents/lab-coding'),
-    path.resolve(__dirname, '../../agents/lab-coding'),
-  ].filter(Boolean)
-  for (const c of candidates) {
-    const bin = path.join(c, engineBinaryName())
-    if (
-      fs.existsSync(bin) ||
-      fs.existsSync(path.join(c, 'cli-dev')) ||
-      fs.existsSync(path.join(c, 'start-lab-agent.command'))
-    ) {
-      return c
-    }
-  }
-  return candidates[0] || path.resolve(process.cwd(), 'agents/lab-coding')
 }
 
 function loadEnvFile(filePath: string): Record<string, string> {
@@ -480,9 +471,7 @@ function extractToolResults(message: unknown): { id: string; isError: boolean; p
     }
     out.push({
       id: b.tool_use_id,
-      isError:
-        Boolean(b.is_error) ||
-        /no such tool available|tool not found|permission denied|error:/i.test(preview),
+      isError: isLikelyToolFailure(Boolean(b.is_error), preview),
       preview: preview.slice(0, 400),
     })
   }
@@ -531,11 +520,14 @@ function emptyState(): SessionState {
     permTimers: new Map(),
     lastActivityAt: Date.now(),
     turnBusy: false,
+    turnStartedAt: 0,
     assistantAccum: '',
     thinkingAccum: '',
+    apiResponseUsage: new Map(),
     turnHadPartials: false,
     turnHadThinkingPartials: false,
     lastAssistantUuid: undefined,
+    toolStartedAt: new Map(),
   }
 }
 
@@ -553,24 +545,15 @@ function extractUserPlainText(message: unknown): string {
   return parts.join('')
 }
 
-function parseUsage(raw: unknown): TokenUsageSnapshot | undefined {
-  if (!raw || typeof raw !== 'object') return undefined
-  const u = raw as Record<string, unknown>
-  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-  const input = num(u.input_tokens)
-  const output = num(u.output_tokens)
-  const cacheRead = num(u.cache_read_input_tokens)
-  const cacheCreate = num(u.cache_creation_input_tokens)
-  if (input === 0 && output === 0 && cacheRead === 0 && cacheCreate === 0) {
-    // Some providers only fill nested fields — still emit zeros only if any key present
-    if (!('input_tokens' in u) && !('output_tokens' in u)) return undefined
-  }
-  return {
-    inputTokens: input,
-    outputTokens: output,
-    cacheReadTokens: cacheRead || undefined,
-    cacheCreationTokens: cacheCreate || undefined,
-  }
+function usageFieldNames(raw: unknown): string {
+  if (!raw || typeof raw !== 'object') return 'unavailable'
+  const known = [
+    'input_tokens', 'output_tokens', 'cache_read_input_tokens',
+    'cache_creation_input_tokens', 'prompt_tokens', 'completion_tokens',
+    'prompt_cache_hit_tokens', 'prompt_cache_miss_tokens', 'prompt_tokens_details',
+  ]
+  const value = raw as Record<string, unknown>
+  return known.filter((key) => key in value).join(',') || 'unknown'
 }
 
 /** Match Lab Code sanitizePath for projects/<sanitized-cwd>/<uuid>.jsonl */
@@ -589,7 +572,14 @@ function sanitizeProjectPath(name: string): string {
  * No --bare (matches start-lab-agent.command). Partial messages for typewriter.
  */
 export class LabCodingBridge {
-  private root = resolveLabCodingRoot()
+  private readonly engineCandidates = engineRootCandidates({
+    platform: process.platform,
+    arch: process.arch,
+    resourcesPath: typeof process.resourcesPath === 'string' ? process.resourcesPath : undefined,
+    repoRoot: path.resolve(__dirname, '../..'),
+    cwd: process.cwd(),
+  })
+  private root = findEngineRoot(this.engineCandidates, process.platform)
   private sessions = new Map<string, SessionState>()
   /** Writable config (sessions/transcripts). Prefer Electron userData — never app Resources (App Translocation is read-only). */
   private configDir: string
@@ -614,6 +604,13 @@ export class LabCodingBridge {
     } catch {
       /* ignore */
     }
+  }
+
+  logRuntimeInfo(version: string, packaged: boolean, platform: string, appPath: string) {
+    const binaryPath = path.join(this.root, engineBinaryName(platform))
+    this.appendEngineLog(
+      `runtime marker=${DESKTOP_RUNTIME_MARKER} version=${sanitizeDesktopDiagnostic(version, os.homedir(), 80)} packaged=${packaged} platform=${platform} appPath=${sanitizeDesktopDiagnostic(appPath, os.homedir(), 240)} engineRoot=${sanitizeDesktopDiagnostic(this.root, os.homedir(), 240)} engineBinary=${sanitizeDesktopDiagnostic(binaryPath, os.homedir(), 280)} engineExists=${fs.existsSync(binaryPath)}`,
+    )
   }
 
   private engineLogPath(): string {
@@ -684,13 +681,18 @@ export class LabCodingBridge {
 
   private beginTurn(s: SessionState) {
     s.turnBusy = true
+    s.turnStartedAt = Date.now()
     s.tools = new Map()
     s.assistantAccum = ''
     s.thinkingAccum = ''
+    s.apiResponseUsage.clear()
+    s.latestRequestUsage = undefined
+    s.peakRequestUsage = undefined
     s.turnHadPartials = false
     s.turnHadThinkingPartials = false
     s.lastAssistantUuid = undefined
     s.pendingPermInput = new Map()
+    s.toolStartedAt.clear()
     this.clearPermTimers(s)
     this.touchActivity(s)
   }
@@ -704,13 +706,40 @@ export class LabCodingBridge {
       }
       // Between turns the process idles on purpose — do not kill
       if (!s.turnBusy) return
-      if (Date.now() - s.lastActivityAt < BUSY_IDLE_TIMEOUT_MS) return
+      const activeTool = [...s.tools.values()].find((tool) => tool.state === 'running')
+      const runningShell = Boolean(activeTool && /bash|shell|powershell|terminal|command|run/i.test(activeTool.name))
+      const reason = getAgentWatchdogStopReason({
+        turnBusy: s.turnBusy,
+        permissionPending: s.permTimers.size > 0 || s.pendingPermInput.size > 0,
+        runningTool: Boolean(activeTool),
+        runningShell,
+        now: Date.now(),
+        lastActivityAt: s.lastActivityAt,
+        turnStartedAt: s.turnStartedAt,
+      })
+      if (!reason) return
       this.clearIdleTimer(s)
       this.clearPermTimers(s)
       this.finalizeRunningTools(s, sessionKey, true)
+      s.pendingPermInput.clear()
+      const shellIdleMinutes = Math.round(AGENT_WATCHDOG_LIMITS.shellNoOutputMs / 60_000)
+      const toolIdleMinutes = Math.round(AGENT_WATCHDOG_LIMITS.toolNoOutputMs / 60_000)
+      const noOutputMinutes = Math.round(AGENT_WATCHDOG_LIMITS.noOutputMs / 60_000)
+      const hardTurnMinutes = Math.round(AGENT_WATCHDOG_LIMITS.hardTurnMs / 60_000)
+      const stopMessage =
+        reason === 'hard-limit'
+          ? `Agent 单轮运行超过 ${hardTurnMinutes} 分钟，已停止。可以缩小任务范围后重试。`
+          : reason === 'shell-idle'
+            ? `Shell 工具连续 ${shellIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。请检查命令或网络后重试。`
+            : reason === 'tool-idle'
+              ? `工具连续 ${toolIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。可以检查工具状态后重试。`
+              : `Agent 连续 ${noOutputMinutes} 分钟没有收到引擎进度，已停止。可检查模型连接或权限状态后重试。`
+      this.appendEngineLog(
+        `watchdog stop session=${sessionKey} reason=${reason} tool=${activeTool?.name || '(none)'} idleMs=${Date.now() - s.lastActivityAt} turnMs=${Date.now() - s.turnStartedAt}`,
+      )
       this.emit(sessionKey, {
         kind: 'error',
-        text: 'Agent 超过 90s 无响应（常见于权限等待或 Shell 挂起），已强制停止',
+        text: stopMessage,
       })
       try {
         s.proc.kill('SIGTERM')
@@ -909,6 +938,7 @@ export class LabCodingBridge {
     }
     const base = s.pendingPermInput.get(requestId) ?? {}
     s.pendingPermInput.delete(requestId)
+    this.touchActivity(s)
     const merged =
       allow && updatedInput ? { ...base, ...updatedInput } : allow ? base : undefined
     const payload = allow
@@ -1084,8 +1114,24 @@ export class LabCodingBridge {
         s.lastAssistantUuid = obj.uuid
       }
       const message = obj.message
+      if (message && typeof message === 'object') {
+        const apiMessage = message as Record<string, unknown>
+        const messageId = typeof apiMessage.id === 'string' ? apiMessage.id : ''
+        const requestUsage = parseTokenUsageSnapshot(apiMessage.usage)
+        if (messageId && requestUsage && !s.apiResponseUsage.has(messageId)) {
+          s.apiResponseUsage.set(messageId, requestUsage)
+          s.latestRequestUsage = requestUsage
+          s.peakRequestUsage = choosePeakContextUsage(s.peakRequestUsage, requestUsage)
+        }
+      }
       for (const tool of extractToolUses(message)) {
         s.tools.set(tool.id, tool)
+        if (/bash|shell|powershell|terminal|command|run/i.test(tool.name)) {
+          s.toolStartedAt.set(tool.id, Date.now())
+          this.appendEngineLog(
+            `shell-start session=${sanitizeDesktopDiagnostic(sessionKey, os.homedir(), 100)} tool=${sanitizeDesktopDiagnostic(tool.name, '', 80)} cwd=${sanitizeDesktopDiagnostic(s.cwd || '', os.homedir(), 240)} command=${sanitizeDesktopDiagnostic(tool.summary, os.homedir(), 360)}`,
+          )
+        }
         this.emit(sessionKey, tool)
       }
       const thinking = extractThinkingText(message)
@@ -1104,6 +1150,21 @@ export class LabCodingBridge {
     if (type === 'user') {
       for (const res of extractToolResults(obj.message)) {
         const prev = s.tools.get(res.id)
+        const startedAt = s.toolStartedAt.get(res.id)
+        s.toolStartedAt.delete(res.id)
+        if (prev && /bash|shell|powershell|terminal|command|run/i.test(prev.name)) {
+          const fields = [
+            `shell-result session=${sanitizeDesktopDiagnostic(sessionKey, os.homedir(), 100)}`,
+            `outcome=${res.isError ? 'failed' : 'ok'}`,
+            `durationMs=${startedAt ? Date.now() - startedAt : 'unknown'}`,
+            `cwd=${sanitizeDesktopDiagnostic(s.cwd || '', os.homedir(), 240)}`,
+            `command=${sanitizeDesktopDiagnostic(prev.summary, os.homedir(), 360)}`,
+          ]
+          if (res.isError) {
+            fields.push(`output=${sanitizeDesktopDiagnostic(res.preview, os.homedir(), 800) || '(empty)'}`)
+          }
+          this.appendEngineLog(fields.join(' '))
+        }
         const done: Extract<BridgeEvent, { kind: 'tool' }> = {
           kind: 'tool',
           id: res.id,
@@ -1134,13 +1195,23 @@ export class LabCodingBridge {
         : resultText
       if (typeof obj.session_id === 'string') s.claudeSessionId = obj.session_id
       s.turnBusy = false
+      // result.usage is accumulated across internal model responses by Lab Code.
+      // It is useful for task totals, but must never be used as a single-window value.
+      const usage = parseTokenUsageSnapshot(obj.usage)
+      const latestContext = s.latestRequestUsage ? contextTokensUsed(s.latestRequestUsage) : 0
+      const peakContext = s.peakRequestUsage ? contextTokensUsed(s.peakRequestUsage) : 0
+      this.appendEngineLog(
+        `token-usage session=${sanitizeDesktopDiagnostic(sessionKey, os.homedir(), 100)} model=${sanitizeDesktopDiagnostic(s.spawnedModel || '(env)', '', 100)} protocol=${s.spawnedProtocol || 'anthropic-messages'} usageFields=${usageFieldNames(obj.usage)} runInput=${usage ? contextTokensUsed(usage) : 0} runOutput=${usage?.outputTokens || 0} runCacheRead=${usage?.cacheReadTokens || 0} runCacheCreate=${usage?.cacheCreationTokens || 0} apiResponses=${s.apiResponseUsage.size} latestRequestInput=${latestContext} peakRequestInput=${peakContext}`,
+      )
       this.emit(sessionKey, {
         kind: 'result',
         text,
         sessionId: s.claudeSessionId,
         isError: Boolean(obj.is_error),
         messageUuid: s.lastAssistantUuid,
-        usage: parseUsage(obj.usage),
+        usage,
+        peakContextUsage: s.peakRequestUsage,
+        contextRequestCount: s.apiResponseUsage.size,
       })
     }
   }
@@ -1159,16 +1230,13 @@ export class LabCodingBridge {
   }
 
   async prompt(req: PromptRequest): Promise<void> {
-    const binCandidates = [
-      path.join(this.root, process.platform === 'win32' ? 'cli-dev.exe' : 'cli-dev'),
-      path.join(this.root, 'cli-dev'),
-      path.join(this.root, 'cli-dev.exe'),
-    ]
-    const bin = binCandidates.find((p) => fs.existsSync(p))
-    if (!bin) {
+    const bin = path.join(this.root, engineBinaryName(process.platform))
+    if (!fs.existsSync(bin)) {
+      const tried = this.engineCandidates.map((root) => path.join(root, engineBinaryName(process.platform))).join('；')
+      this.appendEngineLog(`engine-missing platform=${process.platform} arch=${process.arch} tried=${sanitizeDesktopDiagnostic(tried, os.homedir(), 900)}`)
       this.emit(req.sessionKey, {
         kind: 'error',
-        text: `找不到 Lab Coding 引擎：${binCandidates[0]}（开发：在 agents/lab-coding 执行 bun run build:dev；安装包：应随应用附带引擎）`,
+        text: `找不到 Lab Coding 引擎。已检查：${tried}（开发环境请确认 packaging/engine/${process.platform}-${process.arch} 中有引擎；安装包应随应用附带引擎）`,
       })
       return
     }
@@ -1313,6 +1381,8 @@ export class LabCodingBridge {
       'stdio',
       '--permission-mode',
       req.permissionMode || 'default',
+      '--append-system-prompt',
+      DESKTOP_AGENT_GUIDANCE,
     ]
     if (req.model && req.model !== '__add_api__') {
       args.push('--model', req.model)
@@ -1366,6 +1436,7 @@ export class LabCodingBridge {
 
     let errBuf = ''
     proc.stderr?.on('data', (chunk: Buffer) => {
+      this.touchActivity(state)
       errBuf += chunk.toString('utf8')
     })
 
@@ -1373,6 +1444,9 @@ export class LabCodingBridge {
       this.clearIdleTimer(state)
       this.clearPermTimers(state)
       this.finalizeRunningTools(state, req.sessionKey, true)
+      this.appendEngineLog(
+        `process-error session=${sanitizeDesktopDiagnostic(req.sessionKey, os.homedir(), 100)} error=${sanitizeDesktopDiagnostic(err.message, os.homedir(), 800)}`,
+      )
       this.emit(req.sessionKey, { kind: 'error', text: redactSensitiveText(err.message) })
       state.proc = undefined
       state.rl = undefined
@@ -1389,15 +1463,14 @@ export class LabCodingBridge {
       state.turnBusy = false
       if (wasBusy) {
         this.finalizeRunningTools(state, req.sessionKey, true)
-        const tip = redactSensitiveText(errBuf
+        const tip = sanitizeDesktopDiagnostic(errBuf
           .trim()
           .split(/\n/)
           .slice(-6)
           .join(' ')
-          .replace(/\s+/g, ' ')
-          .slice(0, 800))
+          .replace(/\s+/g, ' '), os.homedir(), 800)
         this.appendEngineLog(
-          `session=${req.sessionKey} exit=${code ?? 'null'} accum=${state.assistantAccum.length} stderr=${tip || '(empty)'}`,
+          `session=${sanitizeDesktopDiagnostic(req.sessionKey, os.homedir(), 100)} exit=${code ?? 'null'} turnMs=${Date.now() - state.turnStartedAt} accum=${state.assistantAccum.length} stderr=${tip || '(empty)'}`,
         )
         if (!state.assistantAccum) {
           const detail =

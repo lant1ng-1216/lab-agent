@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ENGINE_BRANDS } from "../../components/EngineBrandMarks";
+import { modelMatchesQuery } from "@shared/modelCatalog";
 import {
   PERMISSION_MODES,
   permissionModeMeta,
@@ -94,7 +95,14 @@ const DEFAULT_COMMANDS = [
   { key: "summarize", name: "/summarize", desc: "Digest the thread so far" },
 ];
 
-export type PromptModel = { key: string; name: string; tag: string; brand?: string; disabled?: boolean };
+export type PromptModel = {
+  key: string;
+  name: string;
+  tag: string;
+  subtitle?: string;
+  brand?: string;
+  disabled?: boolean;
+};
 
 export type SourceActionResult = {
   handled: boolean;
@@ -158,6 +166,8 @@ export default function PromptBar({
   placeholder,
   onSend,
   models = DEFAULT_MODELS,
+  modelSource,
+  modelListHint,
   sources = DEFAULT_SOURCES,
   commands = DEFAULT_COMMANDS,
   files = DEFAULT_FILES,
@@ -180,6 +190,10 @@ export default function PromptBar({
   placeholder?: string;
   onSend?: (text: string, attachments?: string[]) => void;
   models?: PromptModel[];
+  /** Current API profile label; this is context, not a channel switcher. */
+  modelSource?: string;
+  /** Clarifies what the API model-list verification does and does not prove. */
+  modelListHint?: string;
   sources?: Source[];
   commands?: { key: string; name: string; desc: string }[];
   files?: string[];
@@ -208,6 +222,7 @@ export default function PromptBar({
   const [plusOpen, setPlusOpen] = useState(false);
   const [plusQuery, setPlusQuery] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
   const [permOpen, setPermOpen] = useState(false);
   const [model, setModel] = useState(() => MODELS.find((m) => m.key === initialModelKey) ?? MODELS[0] ?? DEFAULT_MODELS[1]);
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -227,6 +242,10 @@ export default function PromptBar({
   const [modelMenuBottom, setModelMenuBottom] = useState(0);
   const [permMenuLeft, setPermMenuLeft] = useState(0);
   const [permMenuBottom, setPermMenuBottom] = useState(0);
+  const visibleModels = useMemo(
+    () => MODELS.filter((item) => modelMatchesQuery(item, modelQuery)),
+    [MODELS, modelQuery],
+  );
   const composerAnchorRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -288,12 +307,12 @@ export default function PromptBar({
 
   /* same gliding highlight in the model menu — floats to the hovered
    * row, falling back to the currently-selected model */
-  const modelIndex = MODELS.findIndex((m) => m.key === model.key);
+  const modelIndex = visibleModels.findIndex((m) => m.key === model.key);
   useLayoutEffect(() => {
     if (!modelOpen) return;
     const target = modelRowRefs.current[modelHovered ?? modelIndex];
     if (target) setModelBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [modelOpen, modelHovered, modelIndex]);
+  }, [modelOpen, modelHovered, modelIndex, visibleModels.length]);
 
   /* The menu is outside the clipped composer, so align it to the model
    * trigger by measurement instead of pinning it to the far-right edge. */
@@ -301,7 +320,9 @@ export default function PromptBar({
     if (!modelOpen || !composerAnchorRef.current || !modelRef.current) return;
     const anchorRect = composerAnchorRef.current.getBoundingClientRect();
     const triggerRect = modelRef.current.getBoundingClientRect();
-    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - 176)));
+    setModelMenuLeft(
+      Math.max(0, Math.min(triggerRect.left - anchorRect.left, anchorRect.width - Math.min(448, anchorRect.width))),
+    );
     setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
   }, [modelOpen, wide, model.name]);
 
@@ -314,8 +335,15 @@ export default function PromptBar({
   }, [permOpen, wide, permissionMode]);
 
   useEffect(() => {
-    if (!modelOpen) setModelHovered(null);
+    if (!modelOpen) {
+      setModelHovered(null);
+      setModelQuery("");
+    }
   }, [modelOpen]);
+
+  useEffect(() => {
+    setModelHovered(null);
+  }, [modelQuery]);
 
   /* model change triggers a simple CSS rainbow flash instead of WebGL */
   const celebrate = () => {
@@ -599,49 +627,74 @@ export default function PromptBar({
       {modelOpen && (
         <div
           onMouseLeave={() => setModelHovered(null)}
-          className="absolute z-10 min-w-[18rem] max-w-[min(28rem,calc(100vw-2rem))] rounded-[10px] bg-surface p-1 shadow-raised"
-          style={{ left: modelMenuLeft, bottom: modelMenuBottom, animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
+          className="absolute z-10 flex min-w-[18rem] max-w-[min(28rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-[10px] bg-surface shadow-raised"
+          style={{ left: modelMenuLeft, bottom: modelMenuBottom, maxHeight: "min(72vh, 34rem)", animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom left" }}
         >
-          {/* single gliding highlight — floats to the hovered / selected row */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
-            style={{
-              top: modelBox?.top ?? 0,
-              height: modelBox?.height ?? 0,
-              opacity: modelBox && modelHovered !== null ? 1 : 0,
-              transition:
-                "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
-            }}
-          />
-          {MODELS.map((m, i) => (
-            <button
-              key={m.key}
-              type="button"
-              ref={(el) => {
-                modelRowRefs.current[i] = el;
+          <div className="shrink-0 border-b border-line p-2">
+            <div className="truncate text-[10.5px] font-medium text-ink-2" title={modelSource}>
+              {modelSource || "选择当前对话使用的模型"}
+            </div>
+            <input
+              value={modelQuery}
+              onChange={(event) => setModelQuery(event.target.value)}
+              onMouseDown={(event) => event.stopPropagation()}
+              placeholder="搜索模型名称或 ID"
+              aria-label="搜索模型名称或 ID"
+              className="mt-1.5 w-full rounded-[6px] border border-line bg-transparent px-2 py-1.5 text-[11.5px] text-ink outline-none placeholder:text-ink-3 focus:border-accent-ink/50"
+            />
+            {modelListHint ? (
+              <div className="mt-1.5 text-[10px] leading-relaxed text-ink-3">{modelListHint}</div>
+            ) : null}
+          </div>
+          <div className="relative min-h-0 overflow-y-auto p-1">
+            {/* single gliding highlight — floats to the hovered / selected row */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              style={{
+                top: modelBox?.top ?? 0,
+                height: modelBox?.height ?? 0,
+                opacity: modelBox && modelHovered !== null ? 1 : 0,
+                transition:
+                  "top 220ms cubic-bezier(0.23,1,0.32,1), height 220ms cubic-bezier(0.23,1,0.32,1), opacity 150ms ease",
               }}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => setModelHovered(i)}
-              onClick={() => {
-                selectModel(m);
-                inputRef.current?.focus();
-              }}
-              disabled={m.disabled}
-              className="relative z-10 flex h-8 w-full items-center gap-2 rounded-[6px] px-2 text-left disabled:pointer-events-none disabled:opacity-45"
-            >
-              {m.brand && BRANDS[m.brand] ? (
-                <span className="flex size-3.5 shrink-0 items-center justify-center overflow-hidden">{BRANDS[m.brand]}</span>
-              ) : null}
-              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-medium text-ink" title={m.name}>
-                {m.name}
-              </span>
-              <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>
-              <span className={`shrink-0 text-ink ${m.key === model.key ? "" : "invisible"}`}>
-                <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
-              </span>
-            </button>
-          ))}
+            />
+            {visibleModels.map((m, i) => (
+              <button
+                key={m.key}
+                type="button"
+                ref={(el) => {
+                  modelRowRefs.current[i] = el;
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setModelHovered(i)}
+                onClick={() => {
+                  selectModel(m);
+                  inputRef.current?.focus();
+                }}
+                disabled={m.disabled}
+                title={m.subtitle ? `${m.name}\n${m.subtitle}` : m.name}
+                className="relative z-10 flex min-h-10 w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left disabled:pointer-events-none disabled:opacity-45"
+              >
+                {m.brand && BRANDS[m.brand] ? (
+                  <span className="flex size-3.5 shrink-0 items-center justify-center overflow-hidden">{BRANDS[m.brand]}</span>
+                ) : null}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-medium text-ink">{m.name}</span>
+                  {m.subtitle ? (
+                    <span className="block truncate font-mono text-[9px] text-ink-3">{m.subtitle}</span>
+                  ) : null}
+                </span>
+                <span className="max-w-28 shrink-0 truncate text-[10px] text-ink-3">{m.tag}</span>
+                <span className={`shrink-0 text-ink ${m.key === model.key ? "" : "invisible"}`}>
+                  <Icon size={13} strokeWidth={2.5}><path d="M20 6L9 17l-5-5" /></Icon>
+                </span>
+              </button>
+            ))}
+            {visibleModels.length === 0 ? (
+              <div className="px-2 py-3 text-[11px] text-ink-3">没有匹配的模型或 ID</div>
+            ) : null}
+          </div>
         </div>
       )}
 

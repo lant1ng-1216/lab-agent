@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { redactSensitiveText, type ChatMessage, type CodingMirrorEvent, type LoopStatus, type SupervisorCommand, type AgentToolTrace } from "@shared/protocol";
+import { summarizeApiError } from "@shared/apiErrors";
 import CanvasFlow, { type AgentState } from "./canvas/CanvasFlow";
 import type { LabNodeKind } from "./canvas/LabNode";
 import FileTree from "./components/FileTree";
@@ -45,9 +46,11 @@ import {
   API_PROVIDER_PRESETS,
   CHAT_MODEL_KEY,
   detectProvider,
+  describeApiSource,
   loadChatModelKey,
   loadCustomApi,
   mapModelsResponse,
+  modelListStatusHint,
   protocolForProvider,
   presetForBaseUrl,
   prettifyModelId,
@@ -56,6 +59,7 @@ import {
   type ApiVerificationState,
   type CustomApiConfig,
 } from "./lib/chatModels";
+import { modelMatchesQuery } from "@shared/modelCatalog";
 import {
   loadPermissionMode,
   savePermissionMode,
@@ -170,40 +174,19 @@ function makeExperiment(n: number, engine: string, shellMode: ShellMode = "super
 function apiVerificationLabel(state?: ApiVerificationState): string {
   switch (state) {
     case "verified":
-      return "已验证";
+      return "模型列表可读取";
     case "checking":
-      return "验证中";
+      return "正在读取模型列表";
     case "error":
-      return "验证失败";
+      return "模型列表读取失败";
     default:
-      return "未验证";
+      return "尚未读取模型列表";
   }
 }
 
 function isCredentialFailure(event: { kind: string; text?: string; isError?: boolean }): boolean {
   if (event.kind === "result" && !event.isError) return false;
   return /\b401\b|unauthorized|authentication fails|invalid (?:api )?key|api key.*invalid/i.test(event.text || "");
-}
-
-function apiErrorSummary(kind?: string, detail?: string): string {
-  const title =
-    kind === "auth"
-      ? "API Key 无效或已过期"
-      : kind === "forbidden"
-        ? "当前账号无权访问"
-        : kind === "invalid-request"
-          ? "请求格式或协议不兼容"
-          : kind === "not-found"
-            ? "接口或模型不存在"
-            : kind === "rate-limit"
-              ? "请求过于频繁"
-              : kind === "timeout"
-                ? "请求超时"
-                : kind === "network"
-                  ? "网络连接失败"
-                  : "API 验证失败";
-  const safeDetail = detail ? redactSensitiveText(detail) : "";
-  return safeDetail ? title + "：" + safeDetail : title;
 }
 
 function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
@@ -268,9 +251,12 @@ export default function App() {
   const [permissionMode, setPermissionMode] = useState<PermissionModeId>(() => loadPermissionMode());
   const [shellMode, setShellMode] = useState<ShellMode>(() => loadShellMode());
   const [apiKey, setApiKey] = useState("");
+  const [apiCredentialAvailable, setApiCredentialAvailable] = useState(false);
+  const [apiCredentialStored, setApiCredentialStored] = useState(false);
   const [customApiOpen, setCustomApiOpen] = useState(false);
   const [customApi, setCustomApi] = useState<CustomApiConfig>(() => loadCustomApi());
   const [customApiDraft, setCustomApiDraft] = useState<CustomApiConfig>(() => loadCustomApi());
+  const [apiModelQuery, setApiModelQuery] = useState("");
   const [apiPreset, setApiPreset] = useState<ApiProviderPresetId>(() =>
     presetForBaseUrl(loadCustomApi().baseUrl),
   );
@@ -283,6 +269,24 @@ export default function App() {
   const [activeExp, setActiveExp] = useState<string | null>(persisted.current.activeId);
   const isNormal = shellMode === "normal";
   const isMacPlatform = window.lab?.platform === "darwin";
+  const filteredApiModels = useMemo(
+    () =>
+      customApi.models.filter((model) =>
+        modelMatchesQuery(
+          { id: model.id, name: model.name, tag: model.ownedBy },
+          apiModelQuery,
+        ),
+      ),
+    [customApi.models, apiModelQuery],
+  );
+  const draftUsesSavedApiKey = Boolean(
+    apiCredentialAvailable &&
+    customApiDraft.baseUrl === customApi.baseUrl &&
+    customApiDraft.provider === customApi.provider &&
+    customApiDraft.protocol === customApi.protocol,
+  );
+  const visibleApiError = apiCheckError ||
+    (draftUsesSavedApiKey && !customApiDraft.apiKey.trim() ? customApi.lastError : undefined);
 
   const [target, setTarget] = useState<LabNodeKind>("lab");
   const [inspector, setInspector] = useState<LabNodeKind | null>(null);
@@ -388,33 +392,51 @@ export default function App() {
       const env = await window.lab.getLabEnv();
       if (cancelled) return;
 
-      const envKey = env.ok ? env.apiKey.trim() : "";
-      const useEnv = Boolean(envKey) && existing.source !== "user";
+      const useEnv = env.ok && existing.source !== "user";
       const baseUrl = (useEnv ? env.baseUrl : existing.baseUrl || env.baseUrl || "https://api.deepseek.com")
         .trim()
         .replace(/\/+$/, "");
-      const apiKey = useEnv ? envKey : existing.apiKey.trim();
-      if (!apiKey) return;
+      const legacyKey = existing.apiKey.trim();
+      const hasCredential = Boolean(legacyKey || env.ok);
+      setApiCredentialAvailable(env.ok);
+      setApiCredentialStored(Boolean(env.credentialStored));
+      if (!hasCredential) return;
       const provider = useEnv ? detectProvider(baseUrl) : existing.provider || detectProvider(baseUrl);
       const protocol = useEnv ? protocolForProvider(provider) : existing.protocol || protocolForProvider(provider);
+
+      // Migrate old plaintext localStorage credentials to Electron safeStorage
+      // before removing the legacy copy. Never discard the only copy if this fails.
+      if (legacyKey) {
+        const saved = await window.lab.setApiKey(legacyKey, {
+          baseUrl,
+          model: existing.models[0]?.id || env.model || undefined,
+        });
+        if (!saved) {
+          showToast("无法安全迁移旧 API Key；旧配置仍保留，请检查系统凭据存储后重试");
+          return;
+        }
+        setApiCredentialAvailable(true);
+        setApiCredentialStored(true);
+        saveCustomApi({ ...existing, apiKey: "" });
+      }
       let models = useEnv ? [] : existing.models;
       let verification: ApiVerificationState = "unverified";
       let lastError: string | undefined;
       let verifiedAt: number | undefined;
 
       if (!models.length && env.model) {
-        models = [{ id: env.model, name: prettifyModelId(env.model), provider }];
+        models = mapModelsResponse({ data: [{ id: env.model }] }, provider);
       }
 
       try {
-        const res = await window.lab.listModels({ baseUrl, apiKey, protocol });
+        const res = await window.lab.listModels({ baseUrl, apiKey: "", protocol });
         if (res.ok && res.models?.length) {
           models = mapModelsResponse({ data: res.models }, provider);
           verification = "verified";
           verifiedAt = Date.now();
         } else {
           verification = "error";
-          lastError = apiErrorSummary(res.errorKind, res.error);
+          lastError = summarizeApiError(res.errorKind, res.error);
         }
       } catch (err) {
         verification = "error";
@@ -424,7 +446,7 @@ export default function App() {
       if (cancelled) return;
       const next: CustomApiConfig = {
         baseUrl,
-        apiKey,
+        apiKey: "",
         provider,
         protocol,
         models,
@@ -435,12 +457,11 @@ export default function App() {
       };
       saveCustomApi(next);
       setCustomApi(next);
-      setCustomApiDraft(next);
-      const preferred = loadChatModelKey(models) || (useEnv ? env.model : "") || models[0]?.id || "";
-      void window.lab.setApiKey(apiKey, { baseUrl, model: preferred || undefined });
+      setCustomApiDraft({ ...next, apiKey: "" });
+      const preferred = loadChatModelKey(models) || models[0]?.id || "";
       if (preferred) setChatModel(preferred);
       if (verification === "error") {
-        showToast("API 未通过验证，请检查 Key、Base URL 或协议");
+        showToast("API 连接未通过验证，详情见模型设置");
       } else if (useEnv) {
         showToast("已从 lab-agent.env 载入并验证 API");
       }
@@ -577,7 +598,7 @@ export default function App() {
           const next: CustomApiConfig = {
             ...current,
             verification: "error",
-            lastError: "API 验证失败：Key 无效、已过期或当前账号无权访问该模型",
+            lastError: "Agent 请求未通过 API 认证。请核对本机保存的 Key、API 地址和账号权限。",
           };
           saveCustomApi(next);
           return next;
@@ -589,17 +610,19 @@ export default function App() {
           const coding = applyAgentEvent(e.coding, event);
           let engineSessionId = e.engineSessionId;
           let tokenTotals = e.tokenTotals;
-          let lastTurnUsage = e.lastTurnUsage;
+          let lastPeakContextUsage = e.lastPeakContextUsage;
+          let lastContextRequestCount = e.lastContextRequestCount;
           if (event.kind === "result" && event.sessionId) {
             engineSessionId = event.sessionId;
           } else if (event.kind === "error" && /无法续聊/.test(event.text)) {
             engineSessionId = null;
           }
-          if (event.kind === "result" && event.usage) {
-            tokenTotals = addUsageToTotals(e.tokenTotals, event.usage);
-            lastTurnUsage = event.usage;
+          if (event.kind === "result") {
+            if (event.usage) tokenTotals = addUsageToTotals(e.tokenTotals, event.usage);
+            lastPeakContextUsage = event.peakContextUsage ?? null;
+            lastContextRequestCount = event.contextRequestCount ?? 0;
           }
-          return { ...e, coding, engineSessionId, tokenTotals, lastTurnUsage };
+          return { ...e, coding, engineSessionId, tokenTotals, lastPeakContextUsage, lastContextRequestCount };
         }),
       );
     });
@@ -1101,7 +1124,8 @@ export default function App() {
           engineResumeAt: null,
           engineCutBefore: null,
           tokenTotals: null,
-          lastTurnUsage: null,
+          lastPeakContextUsage: null,
+          lastContextRequestCount: 0,
         });
       } else {
         patchExp(activeExp, {
@@ -1280,8 +1304,6 @@ export default function App() {
             {isNormal ? (
               <SectionTokenMeter
                 totals={exp?.tokenTotals}
-                lastUsage={exp?.lastTurnUsage}
-                modelId={chatModel}
                 compactHint={
                   coding.statusLabel && /压缩/.test(coding.statusLabel) ? coding.statusLabel : null
                 }
@@ -1533,7 +1555,7 @@ export default function App() {
                   onEnginePending={(name) => pushEnginePendingNotice(name)}
                   customApi={customApi}
                   onRequestCustomApi={() => {
-                    setCustomApiDraft(customApi);
+                    setCustomApiDraft({ ...customApi, apiKey: "" });
                     setApiPreset(presetForBaseUrl(customApi.baseUrl));
                     setApiCheckError(null);
                     setCustomApiOpen(true);
@@ -1574,7 +1596,7 @@ export default function App() {
 
             if (isNormal && normalEmpty) {
               return (
-                <div className="flex h-[calc(100%-44px)] flex-col items-center justify-center px-4 pb-8">
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-8">
                   <NormalChatView
                     state={coding}
                     sessionName={exp?.name ?? "新对话"}
@@ -1592,13 +1614,14 @@ export default function App() {
               );
             }
 
-            return (
-              <>
-                <div className={`h-[calc(100%-44px)] ${isNormal ? "pb-36" : !isNormal ? "pb-36" : ""}`}>
-                  {isNormal ? (
+            if (isNormal) {
+              return (
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="relative min-h-0 flex-1">
                     <NormalChatView
                       state={coding}
                       sessionName={exp?.name ?? "新对话"}
+                      bottomInset={28}
                       workdir={activeWorkspace}
                       appearance={appearance}
                       onAppearanceChange={setAppearance}
@@ -1607,18 +1630,27 @@ export default function App() {
                       onResendFromUser={resendFromUser}
                       onWithdrawUser={withdrawUser}
                     />
-                  ) : (
-                    <CanvasFlow
-                      lab={lab}
-                      coding={coding}
-                      nodes={nodes}
-                      target={target}
-                      onSelectTarget={() => showToast("监工态为概念预览 · 暂不可用")}
-                      onOpenDetail={() => showToast("监工态为概念预览 · 暂不可用")}
-                      onAddNode={() => showToast("监工态为概念预览 · 暂不可用")}
-                      onRemoveNode={() => showToast("监工态为概念预览 · 暂不可用")}
-                    />
-                  )}
+                  </div>
+                  <div className="titlebar-no-drag relative z-[2] flex shrink-0 justify-center px-4 pb-4 pt-2">
+                    {composerBlock}
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <>
+                <div className="relative min-h-0 flex-1 pb-36">
+                  <CanvasFlow
+                    lab={lab}
+                    coding={coding}
+                    nodes={nodes}
+                    target={target}
+                    onSelectTarget={() => showToast("监工态为概念预览 · 暂不可用")}
+                    onOpenDetail={() => showToast("监工态为概念预览 · 暂不可用")}
+                    onAddNode={() => showToast("监工态为概念预览 · 暂不可用")}
+                    onRemoveNode={() => showToast("监工态为概念预览 · 暂不可用")}
+                  />
                 </div>
                 <div className="titlebar-no-drag pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-4">
                   {composerBlock}
@@ -1982,42 +2014,68 @@ export default function App() {
                             : "text-[var(--lab-ink-3)]")
                       }
                     >
-                      {apiVerificationLabel(customApi.verification)} · {customApi.source === "env" ? "lab-agent.env" : "本机 API 配置"}
+                      {apiVerificationLabel(customApi.verification)}
                     </span>
                   ) : null}
                 </div>
                 <div className="space-y-1">
                   {isNormal ? (
                     <>
+                      <div className="mb-2 rounded-md bg-[var(--lab-hover)]/60 px-2.5 py-2">
+                        <div className="truncate text-[10px] font-medium text-[var(--lab-ink-2)]" title={describeApiSource(customApi)}>
+                          {describeApiSource(customApi)}
+                        </div>
+                        <div className="mt-0.5 text-[10px] leading-relaxed text-[var(--lab-ink-3)]">
+                          {modelListStatusHint(customApi)}
+                        </div>
+                      </div>
                       {customApi.models.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-[var(--lab-border)] px-2.5 py-3 text-[11.5px] text-[var(--lab-ink-3)]">
                           尚未拉取模型。添加 API Key 后会列出该账号可用的全部模型。
                         </div>
                       ) : (
-                        customApi.models.map((m) => (
-                          <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => setChatModel(m.id)}
-                            className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] ${
-                              chatModel === m.id ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]" : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)]"
-                            }`}
-                          >
-                            <span className="min-w-0 flex-1 truncate">{m.name}</span>
-                            <span className="shrink-0 font-[var(--lab-mono)] text-[9px] text-[var(--lab-ink-3)]">{m.id}</span>
-                            {chatModel === m.id ? <span className="text-[var(--lab-accent)]">✓</span> : null}
-                          </button>
-                        ))
+                        <>
+                          <input
+                            value={apiModelQuery}
+                            onChange={(event) => setApiModelQuery(event.target.value)}
+                            placeholder="搜索模型名称或 ID"
+                            aria-label="搜索模型名称或 ID"
+                            className="mb-1.5 w-full rounded-lg border border-[var(--lab-border-soft)] bg-[var(--lab-surface-solid)] px-2.5 py-2 text-[11px] text-[var(--lab-ink)] outline-none placeholder:text-[var(--lab-ink-3)] focus:border-[var(--lab-accent)]/50"
+                          />
+                          {filteredApiModels.length ? filteredApiModels.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              disabled={customApi.protocol === "openai-chat"}
+                              title={`${m.name} · ${m.id}`}
+                              onClick={() => setChatModel(m.id)}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] disabled:cursor-not-allowed disabled:opacity-45 ${
+                                chatModel === m.id ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]" : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)]"
+                              }`}
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{m.name}</span>
+                                <span className="mt-0.5 block truncate font-[var(--lab-mono)] text-[9px] text-[var(--lab-ink-3)]">{m.id}</span>
+                              </span>
+                              {m.ownedBy ? <span className="max-w-20 shrink-0 truncate text-[9px] text-[var(--lab-ink-3)]">{m.ownedBy}</span> : null}
+                              {chatModel === m.id ? <span className="text-[var(--lab-accent)]">✓</span> : null}
+                            </button>
+                          )) : (
+                            <div className="rounded-lg px-2.5 py-3 text-[11px] text-[var(--lab-ink-3)]">
+                              没有匹配的模型或 ID
+                            </div>
+                          )}
+                        </>
                       )}
                       {customApi.lastError ? (
-                        <div className="rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)]">
+                        <div className="min-w-0 max-w-full break-words rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)] [overflow-wrap:anywhere]">
                           {customApi.lastError}
                         </div>
                       ) : null}
                       <button
                         type="button"
                         onClick={() => {
-                          setCustomApiDraft(customApi);
+                          setCustomApiDraft({ ...customApi, apiKey: "" });
                           setApiPreset(presetForBaseUrl(customApi.baseUrl));
                           setApiCheckError(null);
                           setCustomApiOpen(true);
@@ -2079,9 +2137,26 @@ export default function App() {
                 className="w-full rounded-lg bg-[var(--lab-ink)] px-2 py-2.5 text-[12px] font-medium text-[var(--lab-bg)]"
                 onClick={() => {
                   if (!apiKey.trim()) return;
-                  void window.lab?.setApiKey(apiKey.trim());
-                  setApiKey("");
-                  showToast("已保存 Key");
+                  if (!window.lab?.setApiKey) return;
+                  void window.lab.setApiKey(apiKey.trim()).then((saved) => {
+                    if (!saved) {
+                      showToast("系统凭据加密存储不可用，Key 未保存");
+                      return;
+                    }
+                    setApiCredentialAvailable(true);
+                    setApiCredentialStored(true);
+                    setCustomApi((current) => {
+                      const next: CustomApiConfig = {
+                        ...current,
+                        provider: detectProvider(current.baseUrl),
+                        source: "user",
+                      };
+                      saveCustomApi(next);
+                      return next;
+                    });
+                    setApiKey("");
+                    showToast("Key 已加密保存在本机");
+                  });
                 }}
               >
                 保存 Key
@@ -2098,7 +2173,7 @@ export default function App() {
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[15px] font-semibold text-[var(--lab-ink)]">添加 API</div>
-                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">填写 Key 后先验证连接，成功后才会保存可用模型</div>
+                  <div className="mt-0.5 text-[11.5px] text-[var(--lab-ink-3)]">Key 会加密保存在本机；验证失败也会保留，方便重试</div>
                 </div>
                 <button type="button" className="rounded-md px-2 py-1 text-[12px] text-[var(--lab-ink-3)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]" onClick={() => !fetchingModels && setCustomApiOpen(false)} disabled={fetchingModels}>×</button>
               </div>
@@ -2173,10 +2248,21 @@ export default function App() {
                   setApiCheckError(null);
                   setCustomApiDraft((d) => ({ ...d, apiKey: e.target.value, lastError: undefined }));
                 }}
-                placeholder="sk-…"
+                placeholder={
+                  draftUsesSavedApiKey
+                    ? apiCredentialStored
+                      ? "已加密保存在本机，留空继续使用"
+                      : "当前环境已提供凭据，留空继续使用"
+                    : "sk-…"
+                }
                 className="mb-3 w-full rounded-lg border border-[var(--lab-border)] bg-[var(--lab-inset)] px-2.5 py-2 text-[12px] text-[var(--lab-ink)] outline-none"
                 autoFocus
               />
+              {draftUsesSavedApiKey ? (
+                <div className="-mt-2 mb-3 text-[10px] text-[var(--lab-ink-3)]">
+                  {apiCredentialStored ? "当前配置已有本机加密凭据；输入新 Key 并验证即可替换。" : "当前配置可从环境中读取凭据；输入新 Key 并验证即可替换。"}
+                </div>
+              ) : null}
               {customApi.models.length > 0 ? (
                 <div className="mb-4 max-h-32 space-y-1 overflow-y-auto rounded-lg border border-[var(--lab-border-soft)] p-2">
                   <div className="px-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">
@@ -2190,11 +2276,11 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <p className="mb-4 text-[11px] text-[var(--lab-ink-3)]">选好厂商后粘贴 Key，点保存即可拉取模型列表。</p>
+                <p className="mb-4 text-[11px] text-[var(--lab-ink-3)]">选好厂商后粘贴 Key；也可留空使用已加密保存的 Key，然后验证并拉取模型。</p>
               )}
-              {apiCheckError || customApi.lastError ? (
-                <div className="mb-4 rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)]">
-                  {apiCheckError || customApi.lastError}
+              {visibleApiError ? (
+                <div className="mb-4 max-h-28 min-w-0 max-w-full overflow-y-auto break-words rounded-lg border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-2.5 py-2 text-[11px] leading-relaxed text-[var(--lab-red)] [overflow-wrap:anywhere]">
+                  {visibleApiError}
                 </div>
               ) : null}
               <div className="flex justify-end gap-2">
@@ -2206,9 +2292,8 @@ export default function App() {
                   onClick={() => {
                     void (async () => {
                       const baseUrl = customApiDraft.baseUrl.trim();
-                      const key = customApiDraft.apiKey.trim();
-                      if (!baseUrl || !key) {
-                        showToast(apiPreset === "custom" ? "请填写 Base URL 和 API Key" : "请填写 API Key");
+                      if (!baseUrl) {
+                        showToast("请填写 Base URL");
                         return;
                       }
                       if (!hasLabBridge() || !window.lab?.listModels) {
@@ -2218,23 +2303,81 @@ export default function App() {
                       const providerPreset = API_PROVIDER_PRESETS.find((p) => p.id === apiPreset);
                       const provider = providerPreset?.provider || detectProvider(baseUrl);
                       const protocol = providerPreset?.protocol || protocolForProvider(provider);
+                      const sameCredentialTarget =
+                        baseUrl === customApi.baseUrl &&
+                        provider === customApi.provider &&
+                        protocol === customApi.protocol;
+                      const key = customApiDraft.apiKey.trim();
+                      const canReuseCredential = apiCredentialAvailable && sameCredentialTarget;
+                      if (!key && !canReuseCredential) {
+                        showToast(apiPreset === "custom" ? "请填写 Base URL 和 API Key" : "请填写 API Key");
+                        return;
+                      }
                       setFetchingModels(true);
+                      let pendingConfig: CustomApiConfig | undefined;
+                      let credentialSaved = false;
                       try {
-                        const res = await window.lab.listModels({ baseUrl, apiKey: key, protocol });
+                        const providerId = provider === "unknown" ? detectProvider(baseUrl) : provider;
+                        const modelsUnchanged = sameCredentialTarget;
+                        const pending: CustomApiConfig = {
+                          baseUrl,
+                          apiKey: "",
+                          provider: providerId,
+                          protocol,
+                          models: modelsUnchanged ? customApi.models : [],
+                          verification: "checking",
+                          verifiedAt: modelsUnchanged ? customApi.verifiedAt : undefined,
+                          lastError: undefined,
+                          source: "user",
+                        };
+                        pendingConfig = pending;
+                        setApiCheckError(null);
+
+                        let credentialPersisted = canReuseCredential;
+                        if (key) {
+                          credentialPersisted = await window.lab.setApiKey(key, {
+                            baseUrl,
+                            model: pending.models[0]?.id || undefined,
+                          });
+                          if (!credentialPersisted) {
+                            const message = "系统凭据加密存储不可用，Key 尚未保存。请检查系统钥匙串/凭据服务后重试。";
+                            setCustomApiDraft({ ...pending, apiKey: key });
+                            setApiCheckError(message);
+                            showToast("无法安全保存 API Key");
+                            return;
+                          }
+                          setApiCredentialAvailable(true);
+                          setApiCredentialStored(true);
+                        }
+                        credentialSaved = credentialPersisted;
+                        setCustomApi(pending);
+                        setCustomApiDraft({ ...pending, apiKey: "" });
+
+                        // Strip renderer metadata only after the credential is already
+                        // present in safeStorage or resolved from the existing environment.
+                        saveCustomApi(pending);
+
+                        const res = await window.lab.listModels({ baseUrl, apiKey: "", protocol });
                         if (!res.ok || !res.models?.length) {
-                          const message = apiErrorSummary(res.errorKind, res.error);
+                          const message = summarizeApiError(res.errorKind, res.error);
+                          const failed = { ...pending, verification: "error" as const, lastError: message };
+                          setCustomApi(failed);
+                          setCustomApiDraft({ ...failed, apiKey: "" });
+                          saveCustomApi(failed);
                           setApiCheckError(message);
-                          showToast("API 验证失败，请检查 Key、Base URL 或协议");
+                          showToast(credentialPersisted && (key || apiCredentialStored)
+                            ? "Key 已加密保存在本机，但这次 API 验证没有通过"
+                            : "已使用当前环境凭据，但这次 API 验证没有通过");
                           return;
                         }
-                        const resolvedProvider = provider === "unknown" ? detectProvider(baseUrl) : provider;
+                        const resolvedProvider = providerId;
                         const models = mapModelsResponse({ data: res.models }, resolvedProvider).map((m) => ({
                           ...m,
                           name: prettifyModelId(m.id),
                         }));
                         const next: CustomApiConfig = {
                           baseUrl,
-                          apiKey: key,
+                          apiKey: "",
                           provider: resolvedProvider,
                           protocol,
                           models,
@@ -2245,17 +2388,16 @@ export default function App() {
                         };
                         const runtimeChanged =
                           customApi.baseUrl !== next.baseUrl ||
-                          customApi.apiKey !== next.apiKey ||
-                          customApi.protocol !== next.protocol;
+                          customApi.protocol !== next.protocol ||
+                          Boolean(key);
                         if (runtimeChanged && activeExp && !dockBusy) {
                           void window.lab?.agentCancel(activeExp);
                         }
                         setCustomApi(next);
                         setApiCheckError(null);
-                        setCustomApiDraft(next);
+                        setCustomApiDraft({ ...next, apiKey: "" });
                         setApiPreset(presetForBaseUrl(baseUrl));
                         saveCustomApi(next);
-                        void window.lab.setApiKey(key, { baseUrl, model: models[0].id });
                         setChatModel(models[0].id);
                         setCustomApiOpen(false);
                         showToast(
@@ -2264,7 +2406,18 @@ export default function App() {
                             : `已拉取 ${models.length} 个模型${res.endpoint ? ` · ${res.endpoint}` : ""}`,
                         );
                       } catch (err) {
-                        const message = redactSensitiveText(err instanceof Error ? err.message : String(err));
+                        const detail = redactSensitiveText(err instanceof Error ? err.message : String(err));
+                        const message = credentialSaved
+                          ? summarizeApiError("unknown", detail)
+                          : "系统凭据加密存储不可用，Key 未保存。请检查系统钥匙串/凭据服务后重试。";
+                        const failed = pendingConfig
+                          ? { ...pendingConfig, verification: "error" as const, lastError: message }
+                          : null;
+                        if (failed) {
+                          setCustomApi(failed);
+                          setCustomApiDraft({ ...failed, apiKey: credentialSaved ? "" : key });
+                          if (credentialSaved) saveCustomApi(failed);
+                        }
                         setApiCheckError(message);
                         showToast("API 验证失败，请检查网络或配置");
                       } finally {

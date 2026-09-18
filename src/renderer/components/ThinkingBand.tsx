@@ -31,7 +31,7 @@ function latestSnippet(src: string): string {
 export default function ThinkingBand({ text, working = false }: Props) {
   const body = text.trim();
   const [expanded, setExpanded] = useState(false);
-  const endRef = useRef<HTMLSpanElement>(null);
+  const summaryScrollerRef = useRef<HTMLDivElement>(null);
 
   const summary = useMemo(() => {
     if (!body) return "";
@@ -40,7 +40,8 @@ export default function ThinkingBand({ text, working = false }: Props) {
 
   useLayoutEffect(() => {
     if (expanded || !working) return;
-    endRef.current?.scrollIntoView({ inline: "end", block: "nearest", behavior: "smooth" });
+    const scroller = summaryScrollerRef.current;
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth;
   }, [summary, expanded, working]);
 
   useEffect(() => {
@@ -73,6 +74,7 @@ export default function ThinkingBand({ text, working = false }: Props) {
         </span>
         {!expanded ? (
           <div
+            ref={summaryScrollerRef}
             className="relative min-w-0 flex-1 overflow-x-auto"
             style={{
               maskImage: "linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 14px), transparent)",
@@ -100,7 +102,7 @@ export default function ThinkingBand({ text, working = false }: Props) {
               >
                 {summary}
               </span>
-              <span ref={endRef} aria-hidden className="inline-block w-px" />
+              <span aria-hidden className="inline-block w-px" />
             </div>
           </div>
         ) : (

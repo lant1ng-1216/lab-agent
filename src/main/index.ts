@@ -33,7 +33,7 @@ try {
 // Electron CJS interop
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const electron = require('electron') as typeof import('electron');
-const { app, BrowserWindow, ipcMain, dialog, screen, nativeImage } = electron;
+const { app, BrowserWindow, ipcMain, dialog, screen, nativeImage, safeStorage } = electron;
 
 const isDev = !app.isPackaged;
 
@@ -181,6 +181,49 @@ let settings: AppSettings = {
   workspacePath: '',
   apiBaseUrl: '',
 };
+
+function apiCredentialPath(): string {
+  return path.join(app.getPath('userData'), 'credentials', 'api-key.bin');
+}
+
+function hasSecureCredentialBackend(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform !== 'linux') return true;
+  const backend = safeStorage.getSelectedStorageBackend();
+  return backend !== 'basic_text' && backend !== 'unknown';
+}
+
+function readStoredApiKey(): string | undefined {
+  try {
+    if (!hasSecureCredentialBackend()) return undefined;
+    const file = apiCredentialPath();
+    if (!fs.existsSync(file)) return undefined;
+    const encrypted = fs.readFileSync(file);
+    return encrypted.length ? safeStorage.decryptString(encrypted) : undefined;
+  } catch (error) {
+    console.warn('[lab-agent] Could not read the encrypted API credential:', redactSensitiveText(String(error)));
+    return undefined;
+  }
+}
+
+function writeStoredApiKey(key: string): boolean {
+  let temporaryFile = '';
+  try {
+    if (!hasSecureCredentialBackend()) return false;
+    const file = apiCredentialPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    temporaryFile = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporaryFile, safeStorage.encryptString(key), { mode: 0o600 });
+    fs.renameSync(temporaryFile, file);
+    return true;
+  } catch (error) {
+    if (temporaryFile) {
+      try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+    }
+    console.warn('[lab-agent] Could not save the encrypted API credential:', redactSensitiveText(String(error)));
+    return false;
+  }
+}
 
 function resolveLabCodingRoot(): string {
   const candidates = [
@@ -385,13 +428,13 @@ function registerIpc() {
     model: settings.model,
   }));
 
-  /** Full creds for one-time shell bootstrap from lab-agent.env (local desktop only). */
+  /** Credential presence only; API secrets remain in the main process. */
   ipcMain.handle(IPC.GET_LAB_ENV, () => {
     const key = settings.deepseekApiKey || '';
     const placeholder = !key || key.includes('在此粘贴');
     return {
       ok: !placeholder,
-      apiKey: placeholder ? '' : key,
+      credentialStored: Boolean(readStoredApiKey()),
       baseUrl: settings.apiBaseUrl || 'https://api.deepseek.com',
       model: settings.model || 'deepseek-flash',
     };
@@ -399,7 +442,9 @@ function registerIpc() {
 
   ipcMain.handle(IPC.SET_API_KEY, (_e, payload: string | { apiKey?: string; baseUrl?: string; model?: string }) => {
     const key = typeof payload === 'string' ? payload : payload?.apiKey || '';
-    settings.deepseekApiKey = key.trim();
+    const normalizedKey = key.trim();
+    if (!normalizedKey || !writeStoredApiKey(normalizedKey)) return false;
+    settings.deepseekApiKey = normalizedKey;
     if (typeof payload !== 'string') {
       if (payload.baseUrl?.trim()) settings.apiBaseUrl = toOpenAiBase(payload.baseUrl);
       if (payload.model?.trim()) settings.model = payload.model.trim();
@@ -457,6 +502,11 @@ function registerIpc() {
           lastKind = classifyApiError(res.status);
           const detail = redactSensitiveText(body).slice(0, 240);
           lastErr = `HTTP ${res.status} @ ${safeApiEndpoint(endpoint)}${detail ? `：${detail}` : ''}`;
+          // Authentication/authorization failures are credential/account level;
+          // trying a second URL shape only obscures the endpoint that rejected it.
+          if (lastStatus === 401 || lastStatus === 403) {
+            return { ok: false, error: lastErr, errorKind: lastKind, status: lastStatus };
+          }
           continue;
         }
         let json: { data?: { id?: string; owned_by?: string }[] };
@@ -498,7 +548,7 @@ function registerIpc() {
 
   ipcMain.handle(IPC.LIST_MODELS, async (_e, payload: ListModelsRequest) => {
     const baseUrl = String(payload?.baseUrl || '').trim().replace(/\/+$/, '');
-    const apiKey = String(payload?.apiKey || '').trim();
+    const apiKey = String(payload?.apiKey || '').trim() || settings.deepseekApiKey.trim();
     if (!baseUrl) return { ok: false, error: '请填写 Base URL' };
     if (!apiKey) return { ok: false, error: '请填写 API Key' };
     const protocol = payload?.protocol || inferApiProtocol(baseUrl);
@@ -771,8 +821,16 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   applyLabAgentEnv();
+  const storedApiKey = readStoredApiKey();
+  if (storedApiKey) settings.deepseekApiKey = storedApiKey;
 
   labCodingBridge.setConfigDir(path.join(app.getPath('userData'), 'lab-coding-config'));
+  labCodingBridge.logRuntimeInfo(
+    app.getVersion(),
+    app.isPackaged,
+    process.platform,
+    app.getAppPath(),
+  );
 
   const iconEarly = resolveAppIcon();
   applyDockIcon(iconEarly);

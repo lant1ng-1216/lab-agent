@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import PromptBar, { type SourceActionResult } from "../harness/beautiful-ui/PromptBar";
 import type { LabNodeKind } from "../canvas/LabNode";
 import { hasLabBridge, LAB_PREVIEW_HINT } from "../lib/labBridge";
-import { buildChatModels, type CustomApiConfig } from "../lib/chatModels";
+import {
+  buildChatModels,
+  describeApiSource,
+  modelListStatusHint,
+  type CustomApiConfig,
+} from "../lib/chatModels";
 import type { PermissionModeId } from "../lib/permissionModes";
 
 /** Supervisor mode: switch coding engines (Lab Coding ready; others placeholder). */
@@ -213,6 +218,8 @@ export default function Composer({
       placeholder={placeholder ?? "Write a message…"}
       onSend={onSend}
       models={models}
+      modelSource={isNormal ? describeApiSource(customApi) : undefined}
+      modelListHint={isNormal ? modelListStatusHint(customApi) : undefined}
       sources={sources}
       commands={LAB_COMMANDS}
       files={workspaceFiles}

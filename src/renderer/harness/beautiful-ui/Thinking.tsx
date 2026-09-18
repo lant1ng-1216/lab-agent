@@ -153,13 +153,6 @@ export default function ThinkingState({
     if (traceRef.current) setLineHeight(traceRef.current.offsetHeight);
   }, [visible, expanded, variant, stage, v.rows.length, working]);
 
-  // Streaming tools: keep the newest row in view while expanded
-  useEffect(() => {
-    if (!isControlled || !expanded || !working) return;
-    const last = traceRef.current?.lastElementChild as HTMLElement | null;
-    last?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [isControlled, expanded, working, v.rows.length, visible]);
-
   const settledRef = useRef(false);
   useEffect(() => {
     if (working || settledRef.current) return;

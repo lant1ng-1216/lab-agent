@@ -125,6 +125,8 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         error: Boolean(event.isError && !interrupted),
         engineUuid: event.messageUuid || state.streaming?.engineUuid,
         usage: event.usage || state.streaming?.usage,
+        peakContextUsage: event.peakContextUsage || state.streaming?.peakContextUsage,
+        contextRequestCount: event.contextRequestCount ?? state.streaming?.contextRequestCount,
       };
       // Keep streaming so typewriter can finish; UI flushes via commitStreamingReveal
       return {

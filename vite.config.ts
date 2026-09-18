@@ -5,7 +5,18 @@ import path from 'node:path';
 export default defineConfig({
   root: path.resolve(__dirname, 'src/renderer'),
   base: './',
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'lab-agent-dev-origin',
+      configureServer(server) {
+        server.middlewares.use('/__lab-agent-origin', (_request, response) => {
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ root: path.resolve(__dirname) }));
+        });
+      },
+    },
+  ],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {

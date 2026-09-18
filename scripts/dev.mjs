@@ -112,8 +112,23 @@ function launchElectron() {
 
 async function ensureVite() {
   if (await portOpen(VITE_PORT)) {
-    console.log(`[dev] reuse existing Vite on :${VITE_PORT} (browser preview kept)`);
-    return null;
+    let matchesWorkspace = false;
+    try {
+      const response = await fetch(`http://127.0.0.1:${VITE_PORT}/__lab-agent-origin`);
+      if (response.ok) {
+        const info = await response.json();
+        matchesWorkspace = path.resolve(info.root || '') === root;
+      }
+    } catch {
+      /* The port may belong to an unrelated or older dev server. */
+    }
+    if (matchesWorkspace) {
+      console.log(`[dev] reuse this checkout's Vite on :${VITE_PORT} (browser preview kept)`);
+      return null;
+    }
+    throw new Error(
+      `Port :${VITE_PORT} is occupied by an unverified/stale server. Stop the existing Vite/desktop dev process, then rerun npm run desktop so this checkout is used.`,
+    );
   }
 
   console.log(`[dev] starting Vite on :${VITE_PORT}…`);

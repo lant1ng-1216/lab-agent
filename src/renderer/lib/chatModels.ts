@@ -1,5 +1,7 @@
 import type { PromptModel } from "../harness/beautiful-ui/PromptBar";
 import type { ApiProtocol } from "@shared/protocol";
+import { canonicalModelId, dedupeModelsById } from "@shared/modelCatalog";
+import { withoutApiKey } from "@shared/credentialMetadata";
 
 export const CUSTOM_API_KEY = "lab.customApi.v1";
 export const CHAT_MODEL_KEY = "lab.chatModel";
@@ -135,6 +137,36 @@ export function providerBrand(provider: ProviderId): string | undefined {
   return undefined;
 }
 
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  deepseek: "DeepSeek",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  kimi: "Kimi",
+  glm: "GLM",
+  unknown: "自定义 API",
+};
+
+/** A safe, recognizable label for the one API configuration currently in use. */
+export function describeApiSource(config: CustomApiConfig): string {
+  let host = "未配置地址";
+  try {
+    host = new URL(config.baseUrl).host || host;
+  } catch {
+    // Never echo an arbitrary URL here: custom URLs may contain credentials.
+  }
+  const source = config.source === "env" ? "环境配置" : config.source === "user" ? "本机配置" : "待配置";
+  return `${PROVIDER_LABELS[config.provider] || "自定义 API"} · ${host} · ${source}`;
+}
+
+export function modelListStatusHint(config: CustomApiConfig): string {
+  if (config.protocol === "openai-chat") {
+    return "接口返回了模型列表，但当前 Coding 引擎要求 Anthropic Messages 兼容协议。";
+  }
+  return config.verification === "verified"
+    ? "已确认模型列表可读取；列表中的模型尚未逐个实测生成。"
+    : "模型列表连接状态不代表每个模型都能正常生成。";
+}
+
 /** Pretty-print model ids with known DeepSeek product names */
 const KNOWN_MODEL_NAMES: Record<string, string> = {
   "deepseek-flash": "DeepSeek V4.1 Flash",
@@ -169,12 +201,19 @@ export function loadCustomApi(): CustomApiConfig {
     if (!raw) return emptyApi();
     const d = JSON.parse(raw);
     const baseUrl = typeof d.baseUrl === "string" ? d.baseUrl : "";
-    const models = Array.isArray(d.models)
-      ? d.models
-          .map((m: Partial<FetchedModel> & { key?: string; name?: string }) => {
-            const id = typeof m.id === "string" ? m.id : typeof m.key === "string" ? m.key.replace(/^custom:/, "") : "";
-            if (!id) return null;
-            const provider = (m.provider as ProviderId) || detectProvider(baseUrl);
+    const provider = (d.provider as ProviderId) || detectProvider(baseUrl);
+    const parsedModels = Array.isArray(d.models)
+      ? d.models.map((m: Partial<FetchedModel> & { key?: string; name?: string }) => {
+          const rawId = (
+            typeof m.id === "string"
+              ? m.id
+              : typeof m.key === "string"
+                ? m.key.replace(/^custom:/, "")
+                : ""
+          ).trim();
+            if (!rawId) return null;
+            const modelProvider = (m.provider as ProviderId) || provider;
+            const id = canonicalModelId(modelProvider, rawId);
             // Always remapp known product names (stale localStorage e.g. "DeepSeek Flash")
             return {
               id,
@@ -182,10 +221,10 @@ export function loadCustomApi(): CustomApiConfig {
               ownedBy: typeof m.ownedBy === "string" ? m.ownedBy : undefined,
               provider,
             } satisfies FetchedModel;
-          })
+        })
           .filter(Boolean) as FetchedModel[]
       : [];
-    const provider = (d.provider as ProviderId) || detectProvider(baseUrl);
+    const models = dedupeModelsById(parsedModels);
     const protocol: ApiProtocol =
       d.protocol === "openai-chat" || d.protocol === "anthropic-messages"
         ? d.protocol
@@ -226,7 +265,8 @@ function emptyApi(): CustomApiConfig {
 
 export function saveCustomApi(cfg: CustomApiConfig) {
   try {
-    localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(cfg));
+    // Credentials belong in Electron's OS-backed safeStorage, never renderer localStorage.
+    localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(withoutApiKey(cfg)));
   } catch {}
 }
 
@@ -234,6 +274,9 @@ export function loadChatModelKey(fallbackModels: FetchedModel[]): string {
   try {
     const saved = localStorage.getItem(CHAT_MODEL_KEY);
     if (saved && fallbackModels.some((m) => m.id === saved)) return saved;
+    const provider = fallbackModels[0]?.provider;
+    const canonicalSaved = saved ? canonicalModelId(provider, saved) : "";
+    if (canonicalSaved && fallbackModels.some((m) => m.id === canonicalSaved)) return canonicalSaved;
   } catch {}
   return fallbackModels[0]?.id ?? "";
 }
@@ -245,21 +288,29 @@ export function loadChatModelKey(fallbackModels: FetchedModel[]): string {
  */
 export function buildChatModels(custom: CustomApiConfig): PromptModel[] {
   const brand = providerBrand(custom.provider) || providerBrand(detectProvider(custom.baseUrl));
+  const models = dedupeModelsById(custom.models);
+  const displayNameCounts = new Map<string, number>();
+  for (const model of models) {
+    const name = prettifyModelId(model.id).toLocaleLowerCase();
+    displayNameCounts.set(name, (displayNameCounts.get(name) || 0) + 1);
+  }
   const statusTag =
     custom.verification === "verified"
       ? undefined
       : custom.verification === "error"
-        ? "验证失败"
+        ? "列表读取失败"
         : custom.verification === "checking"
-          ? "验证中"
-          : "未验证";
-  const rows: PromptModel[] = custom.models.map((m) => ({
+          ? "读取中"
+          : "列表未读取";
+  const rows: PromptModel[] = models.map((m) => ({
     key: m.id,
     name: prettifyModelId(m.id),
+    // Keep IDs available only to disambiguate genuinely colliding display names.
+    subtitle: displayNameCounts.get(prettifyModelId(m.id).toLocaleLowerCase())! > 1 ? m.id : undefined,
     tag:
       custom.protocol === "openai-chat"
-        ? "暂不支持"
-        : statusTag || m.ownedBy || custom.provider,
+        ? "协议不兼容"
+        : m.ownedBy || statusTag || custom.provider,
     brand: providerBrand(m.provider) || brand,
     disabled: custom.protocol === "openai-chat",
   }));
@@ -280,14 +331,15 @@ export function mapModelsResponse(
     const id = (row as { id?: unknown }).id;
     if (typeof id !== "string" || !id.trim()) continue;
     const ownedBy = (row as { owned_by?: unknown }).owned_by;
+    const canonicalId = canonicalModelId(provider, id);
     out.push({
-      id: id.trim(),
-      name: prettifyModelId(id.trim()),
+      id: canonicalId,
+      name: prettifyModelId(canonicalId),
       ownedBy: typeof ownedBy === "string" ? ownedBy : undefined,
       provider,
     });
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  return dedupeModelsById(out).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Build candidate /models URLs from a user-entered base. */

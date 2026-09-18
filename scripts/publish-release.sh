@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Push main + create GitHub Release with local installer artifacts.
-# Usage: ./scripts/publish-release.sh [v0.1.7]
+# Usage: ./scripts/publish-release.sh [v0.1.8]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAG="${1:-v0.1.7}"
+TAG="${1:-v0.1.8}"
 VER="${TAG#v}"
 
 echo "[publish] pushing main…"
@@ -22,14 +22,16 @@ gh release create "$TAG" "$MAC" "$WIN" "$LINUX" \
   --title "Lab Agent ${VER}" \
   --notes "## Lab Agent ${VER}
 
-- Default appearance is **light (白昼)**
-- Fix Glass/skull skin crash when switching themes (\`scene.animate\` race)
-- Verify API credentials and model availability before saving a provider configuration
-- Route DeepSeek through its official Anthropic-compatible endpoint and report unsupported protocols clearly
-- Refresh the desktop chrome: app icon, refined appearance cards, unified title bar, and non-blocking supervisor preview
-- Render the product switcher as a viewport-safe floating menu so it cannot be covered by the main content
-- macOS zip includes \`mac-first-open.command\` helper
-- Ad-hoc deep-signed mac build (not Apple-notarized)
+- Improve desktop engine discovery and add sanitized runtime diagnostics when an engine or tool fails.
+- Make long-running Agent turns more reliable: permission waits are distinguished from stalls, and quiet Shell/tool work gets appropriate bounded timeouts.
+- Store the API Key locally using Electron's secure storage, clarify model-list verification, and show concise, bounded API errors.
+- Clean up model selection by deduplicating canonical IDs and presenting clear model names.
+- Replace speculative context-window percentages with reported cumulative token totals, with provider cache accounting covered by regression tests.
+- Improve conversation scrolling: reserve space above the composer, follow new output by default, respect history browsing, and provide a return-to-latest control.
+- Keep Agent working/complete presentation in sync and reduce visual flicker during tool activity.
+- Include regression coverage for engine discovery, watchdog behavior, credentials, model catalogs, token accounting, and chat scrolling.
+- macOS zip includes \`mac-first-open.command\` helper.
+- macOS build is ad-hoc signed and is **not Apple-notarized**.
 
 | Platform | File |
 | -------- | ---- |
