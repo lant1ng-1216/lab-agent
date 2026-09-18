@@ -17,7 +17,7 @@ for f in "$MAC" "$WIN" "$LINUX"; do
   [[ -f "$f" ]] || { echo "missing $f — run npm run dist first"; exit 1; }
 done
 
-echo "[publish] creating $TAG…"
+echo "[publish] creating ${TAG}…"
 gh release create "$TAG" "$MAC" "$WIN" "$LINUX" \
   --title "Lab Agent ${VER}" \
   --notes "## Lab Agent ${VER}
