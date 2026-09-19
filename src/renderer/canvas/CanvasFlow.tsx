@@ -13,7 +13,7 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { ChatMessage, CodingMirrorEvent, LoopStatus, SupervisorCommand, AgentToolTrace, AgentPermissionPrompt } from "@shared/protocol";
+import type { AgentPermissionPrompt, AgentToolTrace, AgentWorkSegment, ChatMessage, CodingMirrorEvent, LoopStatus, SupervisorCommand } from "@shared/protocol";
 import LabNode, { type LabFlowNode, type LabNodeKind } from "./LabNode";
 import TermNode, { type TermFlowNode } from "./TermNode";
 
@@ -40,6 +40,8 @@ export interface AgentState {
   permission?: AgentPermissionPrompt | null;
   /** Model reasoning / thinking stream (collapsed when idle) */
   thinkingText?: string;
+  /** Chronological thinking → tools → reply segments for the live turn. */
+  timeline?: AgentWorkSegment[];
 }
 
 interface Props {

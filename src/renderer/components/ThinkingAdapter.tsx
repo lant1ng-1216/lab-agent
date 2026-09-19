@@ -12,6 +12,7 @@ interface Props {
   onSettled?: () => void;
   footer?: ReactNode;
   onFileOpen?: (file: string) => void;
+  className?: string;
 }
 
 /**
@@ -29,6 +30,7 @@ export default function ThinkingAdapter({
   onSettled,
   footer,
   onFileOpen,
+  className,
 }: Props) {
   const [mounted, setMounted] = useState(false);
 
@@ -50,6 +52,7 @@ export default function ThinkingAdapter({
         onSettled={onSettled}
         footer={footer}
         onFileOpen={onFileOpen}
+        className={className}
       />
     </div>
   );

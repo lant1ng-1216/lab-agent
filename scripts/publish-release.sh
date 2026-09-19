@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push main + create GitHub Release with local installer artifacts.
-# Usage: ./scripts/publish-release.sh [v0.1.9]
+# Usage: ./scripts/publish-release.sh [v0.2.0]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

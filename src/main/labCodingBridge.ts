@@ -698,7 +698,6 @@ export class LabCodingBridge {
         runningShell,
         now: Date.now(),
         lastActivityAt: s.lastActivityAt,
-        turnStartedAt: s.turnStartedAt,
       })
       if (!reason) return
       this.clearIdleTimer(s)
@@ -707,15 +706,12 @@ export class LabCodingBridge {
       const shellIdleMinutes = Math.round(AGENT_WATCHDOG_LIMITS.shellNoOutputMs / 60_000)
       const toolIdleMinutes = Math.round(AGENT_WATCHDOG_LIMITS.toolNoOutputMs / 60_000)
       const noOutputMinutes = Math.round(AGENT_WATCHDOG_LIMITS.noOutputMs / 60_000)
-      const hardTurnMinutes = Math.round(AGENT_WATCHDOG_LIMITS.hardTurnMs / 60_000)
       const stopMessage =
-        reason === 'hard-limit'
-          ? `Agent 单轮运行超过 ${hardTurnMinutes} 分钟，已停止。可以缩小任务范围后重试。`
-          : reason === 'shell-idle'
-            ? `Shell 工具连续 ${shellIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。请检查命令或网络后重试。`
-            : reason === 'tool-idle'
-              ? `工具连续 ${toolIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。可以检查工具状态后重试。`
-              : `Agent 连续 ${noOutputMinutes} 分钟没有收到引擎进度，已停止。可检查模型连接或权限状态后重试。`
+        reason === 'shell-idle'
+          ? `Shell 工具连续 ${shellIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。请检查命令或网络后重试。`
+          : reason === 'tool-idle'
+            ? `工具连续 ${toolIdleMinutes} 分钟没有报告进度，已停止${activeTool ? `（${activeTool.name}）` : ''}。可以检查工具状态后重试。`
+            : `Agent 连续 ${noOutputMinutes} 分钟没有收到引擎进度，已停止。可检查模型连接或权限状态后重试。`
       this.appendEngineLog(
         `watchdog stop session=${sessionKey} reason=${reason} tool=${activeTool?.name || '(none)'} idleMs=${Date.now() - s.lastActivityAt} turnMs=${Date.now() - s.turnStartedAt}`,
       )

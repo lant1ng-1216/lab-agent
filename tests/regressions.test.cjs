@@ -2,39 +2,40 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const distDir = process.env.LAB_AGENT_TEST_BUILD || path.join(__dirname, "../dist");
 
 const {
   AGENT_WATCHDOG_LIMITS,
   getAgentWatchdogStopReason,
-} = require("../dist/shared/agentWatchdog.js");
+} = require(path.join(distDir, "shared/agentWatchdog.js"));
 const {
   avatarMotionForTurn,
   isAgentTurnWorking,
-} = require("../dist/shared/agentPresentation.js");
+} = require(path.join(distDir, "shared/agentPresentation.js"));
 const {
   canonicalModelId,
   dedupeModelsById,
   modelMatchesQuery,
-} = require("../dist/shared/modelCatalog.js");
-const { summarizeApiError } = require("../dist/shared/apiErrors.js");
-const { withoutApiKey } = require("../dist/shared/credentialMetadata.js");
-const { findEngineRoot } = require("../dist/main/enginePaths.js");
-const { DESKTOP_AGENT_GUIDANCE } = require("../dist/shared/desktopAgentGuidance.js");
+} = require(path.join(distDir, "shared/modelCatalog.js"));
+const { summarizeApiError } = require(path.join(distDir, "shared/apiErrors.js"));
+const { withoutApiKey } = require(path.join(distDir, "shared/credentialMetadata.js"));
+const { findEngineRoot } = require(path.join(distDir, "main/enginePaths.js"));
+const { DESKTOP_AGENT_GUIDANCE } = require(path.join(distDir, "shared/desktopAgentGuidance.js"));
 const {
   labAgentMemoryGuardSettings,
   labAgentRuntimeEnv,
-} = require("../dist/shared/labAgentRuntime.js");
+} = require(path.join(distDir, "shared/labAgentRuntime.js"));
 const {
   DESKTOP_RUNTIME_MARKER,
   isLikelyToolFailure,
   sanitizeDesktopDiagnostic,
-} = require("../dist/shared/desktopRuntime.js");
+} = require(path.join(distDir, "shared/desktopRuntime.js"));
 const {
   CHAT_FOLLOW_RESUME_DELAY_MS,
   chatBottomInset,
   isIntentionalChatBrowse,
   isNearChatBottom,
-} = require("../dist/shared/chatScroll.js");
+} = require(path.join(distDir, "shared/chatScroll.js"));
 const {
   cacheHitPercent,
   contextTokensUsed,
@@ -43,7 +44,7 @@ const {
   peakContextUsage,
   reportedTurnTokens,
   resolveModelContextLimit,
-} = require("../dist/shared/modelContext.js");
+} = require(path.join(distDir, "shared/modelContext.js"));
 
 const minute = 60_000;
 
@@ -55,7 +56,6 @@ function watchdogSnapshot(overrides = {}) {
     runningShell: false,
     now: 0,
     lastActivityAt: 0,
-    turnStartedAt: 0,
     ...overrides,
   };
 }
@@ -63,7 +63,7 @@ function watchdogSnapshot(overrides = {}) {
 test("permission waits suspend every automatic timeout until the user responds", () => {
   assert.equal(
     getAgentWatchdogStopReason(
-      watchdogSnapshot({ now: AGENT_WATCHDOG_LIMITS.hardTurnMs * 4, permissionPending: true }),
+      watchdogSnapshot({ now: 60 * minute, permissionPending: true }),
     ),
     null,
   );
@@ -106,12 +106,25 @@ test("generic and non-shell tool silence use explicit, distinct limits", () => {
   );
 });
 
-test("the hard turn limit resumes after a pending permission is resolved", () => {
+test("a progressing turn can run beyond 30 minutes without a total-duration cutoff", () => {
   assert.equal(
     getAgentWatchdogStopReason(watchdogSnapshot({
-      now: AGENT_WATCHDOG_LIMITS.hardTurnMs,
+      now: 45 * minute,
+      lastActivityAt: 44 * minute,
     })),
-    "hard-limit",
+    null,
+  );
+});
+
+test("long-running work still stops when its progress channel is genuinely idle", () => {
+  assert.equal(
+    getAgentWatchdogStopReason(watchdogSnapshot({
+      now: 45 * minute,
+      lastActivityAt: 29 * minute,
+      runningTool: true,
+      runningShell: true,
+    })),
+    "shell-idle",
   );
 });
 
@@ -120,8 +133,48 @@ test("approval cards stay inline, allow custom answers, and do not expire", () =
   const bridge = fs.readFileSync(path.join(__dirname, "../src/main/labCodingBridge.ts"), "utf8");
   assert.match(card, /<textarea/);
   assert.match(card, /取消任务/);
+  assert.match(card, /onCollapse/);
+  assert.match(card, /收起审批面板/);
   assert.doesNotMatch(card, /absolute inset-0 z-50/);
   assert.doesNotMatch(bridge, /PERMISSION_TIMEOUT|Permission timed out/);
+});
+
+test("pending approval is a bounded popover outside transcript layout flow", () => {
+  const app = fs.readFileSync(path.join(__dirname, "../src/renderer/App.tsx"), "utf8");
+  const chat = fs.readFileSync(path.join(__dirname, "../src/renderer/components/NormalChatView.tsx"), "utf8");
+  const composerBlock = app.slice(app.indexOf("const composerBlock ="));
+  assert.match(composerBlock, /relative w-full max-w-\[640px\]/);
+  assert.match(composerBlock, /pointer-events-none absolute bottom-\[calc\(100%\+0\.5rem\)\]/);
+  assert.match(composerBlock, /pointer-events-auto w-\[min\(560px,100%\)\]/);
+  assert.match(composerBlock, /permissionCollapsed/);
+  assert.match(composerBlock, /PermissionStatusChip/);
+  assert.doesNotMatch(chat, /<PermissionModal/);
+});
+
+test("live work uses one chronological timeline and no duplicate reply loader", () => {
+  const chat = fs.readFileSync(path.join(__dirname, "../src/renderer/components/NormalChatView.tsx"), "utf8");
+  const card = fs.readFileSync(path.join(__dirname, "../src/renderer/components/PermissionModal.tsx"), "utf8");
+  const thinking = fs.readFileSync(path.join(__dirname, "../src/renderer/harness/beautiful-ui/Thinking.tsx"), "utf8");
+  assert.match(chat, /function WorkSegmentView/);
+  assert.match(chat, /timeline\.map/);
+  assert.doesNotMatch(chat, /showReplyActivity/);
+  assert.doesNotMatch(chat, /正在生成回复/);
+  assert.match(thinking, /max-h-\[min\(36vh,320px\)\]/);
+  assert.match(thinking, /向下滚动查看其余工具/);
+  assert.match(card, /w-full max-w-full flex-col/);
+  assert.doesNotMatch(card, /max-h-32 space-y-1 overflow-y-auto/);
+  assert.match(card, /aria-expanded=\{showCustomInput\}/);
+});
+
+test("agent events are grouped into interleaved thinking, tools, and reply segments", () => {
+  const turn = fs.readFileSync(path.join(__dirname, "../src/renderer/lib/agentTurn.ts"), "utf8");
+  assert.match(turn, /function newWorkSegment/);
+  assert.match(turn, /state\.timeline/);
+  assert.match(turn, /replaceToolInTimeline/);
+  assert.match(turn, /finishTimeline/);
+  assert.match(turn, /hasVisibleReply/);
+  assert.match(turn, /current\.content/);
+  assert.match(turn, /timeline,\s*\n\s*streaming: state\.streaming/);
 });
 
 test("user messages can open inline editing and withdrawn text returns to the composer", () => {

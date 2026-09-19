@@ -62,6 +62,8 @@ export interface ChatMessage {
   tools?: AgentToolTrace[];
   /** Archived model thinking / reasoning for this turn */
   thinking?: string;
+  /** Ordered work segments: thinking/tools followed by the related reply text. */
+  timeline?: AgentWorkSegment[];
   /** Stopped mid-turn — UI can offer edit & resend on the prior user message */
   interrupted?: boolean;
   /** Provider/engine failure — render with an error treatment instead of a normal reply. */
@@ -74,6 +76,22 @@ export interface ChatMessage {
   peakContextUsage?: TokenUsageSnapshot;
   /** Number of unique model responses included when measuring the task's peak context. */
   contextRequestCount?: number;
+}
+
+export type AgentWorkSegmentPhase = 'thinking' | 'tools' | 'reply' | 'waiting' | 'done' | 'error';
+
+/**
+ * A chronological slice of one agent turn. The renderer uses this to keep
+ * reasoning, tool calls, and the reply that follows them together in the
+ * transcript instead of rendering one global tools block at the top.
+ */
+export interface AgentWorkSegment {
+  id: string;
+  phase: AgentWorkSegmentPhase;
+  thinking?: string;
+  tools?: AgentToolTrace[];
+  content?: string;
+  ts: number;
 }
 
 /** Coding transcript entry mirrored TO supervisor (read-only) */

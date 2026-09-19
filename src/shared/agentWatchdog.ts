@@ -3,10 +3,9 @@ export const AGENT_WATCHDOG_LIMITS = {
   noOutputMs: 5 * 60_000,
   toolNoOutputMs: 10 * 60_000,
   shellNoOutputMs: 15 * 60_000,
-  hardTurnMs: 30 * 60_000,
 } as const;
 
-export type AgentWatchdogStopReason = "idle" | "tool-idle" | "shell-idle" | "hard-limit";
+export type AgentWatchdogStopReason = "idle" | "tool-idle" | "shell-idle";
 
 export interface AgentWatchdogSnapshot {
   turnBusy: boolean;
@@ -15,7 +14,6 @@ export interface AgentWatchdogSnapshot {
   runningShell: boolean;
   now: number;
   lastActivityAt: number;
-  turnStartedAt: number;
 }
 
 /** A pending user decision suspends automatic timeouts until the user responds. */
@@ -23,9 +21,6 @@ export function getAgentWatchdogStopReason(
   snapshot: AgentWatchdogSnapshot,
 ): AgentWatchdogStopReason | null {
   if (!snapshot.turnBusy || snapshot.permissionPending) return null;
-  if (snapshot.now - snapshot.turnStartedAt >= AGENT_WATCHDOG_LIMITS.hardTurnMs) {
-    return "hard-limit";
-  }
 
   const idleLimit = snapshot.runningShell
     ? AGENT_WATCHDOG_LIMITS.shellNoOutputMs

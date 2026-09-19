@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentState } from "../canvas/CanvasFlow";
-import type { AgentToolTrace, ChatMessage } from "@shared/protocol";
+import type { AgentToolTrace, AgentWorkSegment, ChatMessage } from "@shared/protocol";
 import StreamingText from "../harness/beautiful-ui/StreamingText";
 import LoadingState from "../harness/beautiful-ui/LoadingState";
-import ToolChips from "../harness/beautiful-ui/ToolChips";
 import ThinkingAdapter from "./ThinkingAdapter";
 import ThinkingBand from "./ThinkingBand";
 import MarkdownBody from "./MarkdownBody";
 import type { FilePreviewPayload } from "./FileInspectSidebar";
 import BloubAvatar, { type BloubMood, type BloubMotion } from "../mascot/bloub/BloubAvatar";
 import { UserBubble } from "@harness";
-import { toolsToChips, toolsToThinkingRows } from "../lib/agentTurn";
+import { toolsToThinkingRows } from "../lib/agentTurn";
 import { TurnTokenFooter } from "./TokenUsageMeter";
 import AppearancePickCards from "./AppearancePickCards";
 import type { AppearanceState } from "../lib/appearance";
 import { avatarMotionForTurn, isAgentTurnWorking } from "@shared/agentPresentation";
-import PermissionModal, { type PermissionAction } from "./PermissionModal";
 import {
   CHAT_FOLLOW_RESUME_DELAY_MS,
   isIntentionalChatBrowse,
@@ -55,7 +53,6 @@ type Props = {
   onResendFromUser?: (userId: string, text: string) => void;
   /** Drop this user message and everything after, restoring its text to the composer. */
   onWithdrawUser?: (userId: string, text: string) => void;
-  onPermissionAction?: (action: PermissionAction) => void;
 };
 
 function looksLikePlan(text: string): boolean {
@@ -415,22 +412,6 @@ function EditableUserBubble({
   );
 }
 
-function chipsFooter(tools: AgentToolTrace[], onFileOpen?: (file: string) => void) {
-  const chips = toolsToChips(tools);
-  return (
-    <ToolChips
-      revealAll
-      hideMore
-      steps={chips.steps}
-      diffs={chips.diffs}
-      diffLines={chips.diffLines}
-      labels={{ header: chips.header, more: "" }}
-      className="!min-h-0 !max-w-none"
-      onFileOpen={onFileOpen}
-    />
-  );
-}
-
 function MessageTools({
   tools,
   working = false,
@@ -450,9 +431,83 @@ function MessageTools({
       label={working ? "Running tools" : "Tools"}
       doneLabel={`Ran ${tools.length} tool${tools.length === 1 ? "" : "s"}`}
       rows={thinkingRows}
-      footer={chipsFooter(tools, onFileOpen)}
       onFileOpen={onFileOpen}
+      className="!max-w-none"
     />
+  );
+}
+
+function SegmentText({
+  text,
+  live = false,
+  complete = true,
+  onDone,
+  onQuoteSelection,
+}: {
+  text: string;
+  live?: boolean;
+  complete?: boolean;
+  onDone?: () => void;
+  onQuoteSelection?: (text: string) => void;
+}) {
+  if (!text.trim()) return null;
+  return (
+    <SelectableAssistantContent onQuoteSelection={onQuoteSelection}>
+      {live ? (
+        <StreamingText
+          mode="live"
+          liveText={text}
+          complete={complete}
+          fill
+          sources={[]}
+          followUps={[]}
+          onDone={onDone}
+        />
+      ) : (
+        <MarkdownBody text={text} />
+      )}
+    </SelectableAssistantContent>
+  );
+}
+
+function WorkSegmentView({
+  segment,
+  live = false,
+  active: activeProp = live,
+  streamComplete = true,
+  onStreamingSettled,
+  onFileOpen,
+  onQuoteSelection,
+}: {
+  segment: AgentWorkSegment;
+  live?: boolean;
+  active?: boolean;
+  streamComplete?: boolean;
+  onStreamingSettled?: () => void;
+  onFileOpen?: (file: string) => void;
+  onQuoteSelection?: (text: string) => void;
+}) {
+  const tools = segment.tools ?? [];
+  const active = activeProp && !streamComplete && segment.phase !== "done" && segment.phase !== "error";
+  const toolWorking = active && tools.some((tool) => tool.state === "running");
+  const text = segment.content ?? "";
+
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {segment.thinking?.trim() ? (
+        <ThinkingBand text={segment.thinking} working={active && segment.phase === "thinking"} />
+      ) : null}
+      {tools.length ? <MessageTools tools={tools} working={toolWorking} onFileOpen={onFileOpen} /> : null}
+      {text.trim() ? (
+        <SegmentText
+          text={text}
+          live={live}
+          complete={!live || streamComplete}
+          onDone={live ? onStreamingSettled : undefined}
+          onQuoteSelection={onQuoteSelection}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -510,30 +565,44 @@ function AssistantMessageBody({
 }) {
   const thinking = msg.thinking?.trim();
   const open = (file: string) => onFileOpen?.(file, msg.tools);
+  const timeline = msg.timeline?.length ? msg.timeline : null;
   return (
     <AssistantShell mood={msg.error ? "error" : "idle"} showAvatar={showAvatar}>
-      {thinking ? <ThinkingBand text={thinking} working={false} /> : null}
-      {msg.tools?.length ? <MessageTools tools={msg.tools} working={false} onFileOpen={open} /> : null}
-      <div className={msg.error ? "rounded-xl border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-3 py-2.5 text-[var(--lab-red)]" : undefined}>
-        {msg.interrupted ? (
-          <div className="text-[11.5px] text-[var(--lab-ink-3)]">已中断 · 可编辑上一条后重发</div>
-        ) : null}
-        <SelectableAssistantContent onQuoteSelection={onQuoteSelection}>
-          {looksLikePlan(msg.content) && !msg.interrupted ? (
-            <details open className="group">
-              <summary className="cursor-pointer list-none text-[11px] font-semibold tracking-[0.06em] text-[var(--lab-ink-3)]">
-                计划 / 说明
-                <span className="ml-2 font-normal text-[var(--lab-ink-3)] group-open:hidden">展开</span>
-              </summary>
-              <div className="mt-2">
+      {timeline ? (
+        timeline.map((segment) => (
+          <WorkSegmentView
+            key={segment.id}
+            segment={segment}
+            onFileOpen={open}
+            onQuoteSelection={onQuoteSelection}
+          />
+        ))
+      ) : (
+        <>
+          {thinking ? <ThinkingBand text={thinking} working={false} /> : null}
+          {msg.tools?.length ? <MessageTools tools={msg.tools} working={false} onFileOpen={open} /> : null}
+          <div className={msg.error ? "rounded-xl border border-[var(--lab-red)]/25 bg-[var(--lab-red)]/5 px-3 py-2.5 text-[var(--lab-red)]" : undefined}>
+            {msg.interrupted ? (
+              <div className="text-[11.5px] text-[var(--lab-ink-3)]">已中断 · 可编辑上一条后重发</div>
+            ) : null}
+            <SelectableAssistantContent onQuoteSelection={onQuoteSelection}>
+              {looksLikePlan(msg.content) && !msg.interrupted ? (
+                <details open className="group">
+                  <summary className="cursor-pointer list-none text-[11px] font-semibold tracking-[0.06em] text-[var(--lab-ink-3)]">
+                    计划 / 说明
+                    <span className="ml-2 font-normal text-[var(--lab-ink-3)] group-open:hidden">展开</span>
+                  </summary>
+                  <div className="mt-2">
+                    <MarkdownBody text={msg.content} />
+                  </div>
+                </details>
+              ) : (
                 <MarkdownBody text={msg.content} />
-              </div>
-            </details>
-          ) : (
-            <MarkdownBody text={msg.content} />
-          )}
-        </SelectableAssistantContent>
-      </div>
+              )}
+            </SelectableAssistantContent>
+          </div>
+        </>
+      )}
       <TurnTokenFooter usage={msg.usage} />
     </AssistantShell>
   );
@@ -658,7 +727,6 @@ export default function NormalChatView({
   onQuoteSelection,
   onResendFromUser,
   onWithdrawUser,
-  onPermissionAction,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
@@ -790,9 +858,9 @@ export default function NormalChatView({
     !state.permission &&
     !liveThinking;
 
+  const timeline = state.timeline ?? [];
   const showTools = tools.length > 0;
-  const liveTurn = turnWorking || Boolean(state.streaming) || showTools || Boolean(liveThinking);
-  const toolRows = useMemo(() => toolsToThinkingRows(tools), [tools]);
+  const liveTurn = turnWorking || Boolean(state.streaming) || showTools || Boolean(liveThinking) || timeline.length > 0;
   const mood = bloubMood(state);
   const streamText = state.streaming?.content ?? "";
 
@@ -850,6 +918,7 @@ export default function NormalChatView({
     streamText,
     state.status,
     tools,
+    timeline,
     liveThinking.length,
     state.permission?.requestId,
     scheduleAutoScroll,
@@ -1000,51 +1069,38 @@ export default function NormalChatView({
                   <LoadingState variant="Drive" label={state.statusLabel || "Lab Agent 思考中"} />
                 ) : null}
 
-                {liveThinking ? (
-                  <ThinkingBand text={liveThinking} working={turnWorking && !state.streamComplete} />
-                ) : null}
-
-                {/* Tools: fully expanded while running; collapse when tools settle */}
-                {showTools ? (
-                  <ThinkingAdapter
-                    variant="Coding"
-                    controlled
-                    working={turnWorking}
-                    label={
-                      state.status === "waiting"
-                        ? "等待批准…"
-                        : toolsWorking || state.status === "tool"
-                          ? "Running tools"
-                          : "Tools"
-                    }
-                    doneLabel={`Ran ${tools.length} tool${tools.length === 1 ? "" : "s"}`}
-                    rows={toolRows}
-                    footer={chipsFooter(tools, openFile)}
-                    onFileOpen={openFile}
-                  />
-                ) : null}
-
-                {state.permission ? (
-                  <PermissionModal
-                    permission={state.permission}
-                    onAction={(action) => onPermissionAction?.(action)}
-                  />
-                ) : null}
-
-                {/* Text streams as soon as deltas arrive — not blocked on tools finishing */}
-                {state.streaming && streamText ? (
-                  <SelectableAssistantContent onQuoteSelection={onQuoteSelection}>
-                    <StreamingText
-                      mode="live"
-                      liveText={streamText}
-                      complete={Boolean(state.streamComplete)}
-                      fill
-                      sources={[]}
-                      followUps={[]}
-                      onDone={onStreamingSettled}
-                    />
-                  </SelectableAssistantContent>
-                ) : null}
+                {timeline.length ? (
+                  <div className="flex min-w-0 flex-col gap-3">
+                    {timeline.map((segment, index) => (
+                      <WorkSegmentView
+                        key={segment.id}
+                        segment={segment}
+                        live={index === timeline.length - 1}
+                        active={index === timeline.length - 1 && turnWorking}
+                        streamComplete={index === timeline.length - 1 ? Boolean(state.streamComplete) : true}
+                        onStreamingSettled={index === timeline.length - 1 ? onStreamingSettled : undefined}
+                        onFileOpen={openFile}
+                        onQuoteSelection={onQuoteSelection}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    {liveThinking ? (
+                      <ThinkingBand text={liveThinking} working={turnWorking && !state.streamComplete} />
+                    ) : null}
+                    {showTools ? <MessageTools tools={tools} working={turnWorking} onFileOpen={openFile} /> : null}
+                    {state.streaming && streamText ? (
+                      <SegmentText
+                        text={streamText}
+                        live
+                        complete={Boolean(state.streamComplete)}
+                        onDone={onStreamingSettled}
+                        onQuoteSelection={onQuoteSelection}
+                      />
+                    ) : null}
+                  </>
+                )}
                 {state.streamComplete ? (
                   <TurnTokenFooter usage={state.streaming?.usage} />
                 ) : null}

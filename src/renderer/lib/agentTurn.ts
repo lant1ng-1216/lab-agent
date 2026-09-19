@@ -1,7 +1,91 @@
-import type { AgentBridgeEvent, AgentToolTrace, ChatMessage, CodingMirrorEvent, LoopStatus } from "@shared/protocol";
+import type {
+  AgentBridgeEvent,
+  AgentToolTrace,
+  AgentWorkSegment,
+  ChatMessage,
+  CodingMirrorEvent,
+  LoopStatus,
+} from "@shared/protocol";
 import type { AgentState } from "../canvas/CanvasFlow";
 import type { ThinkingRow } from "../harness/beautiful-ui/Thinking";
 import type { ToolDiff, ToolDiffLine, ToolStep } from "../harness/beautiful-ui/ToolChips";
+
+function newWorkSegment(phase: AgentWorkSegment["phase"]): AgentWorkSegment {
+  return {
+    id: `work-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    phase,
+    tools: [],
+    ts: Date.now(),
+  };
+}
+
+function hasVisibleReply(segment: AgentWorkSegment | undefined): boolean {
+  return Boolean(segment?.content?.trim());
+}
+
+function updateCurrentSegment(
+  timeline: AgentWorkSegment[] | undefined,
+  phase: AgentWorkSegment["phase"],
+  splitWhen: (current: AgentWorkSegment | undefined) => boolean,
+): { timeline: AgentWorkSegment[]; current: AgentWorkSegment } {
+  const next = (timeline ?? []).map((segment) => ({
+    ...segment,
+    tools: segment.tools ? [...segment.tools] : [],
+  }));
+  const previous = next[next.length - 1];
+  const current = !previous || splitWhen(previous) ? newWorkSegment(phase) : { ...previous, phase };
+  if (!previous || current.id !== previous.id) next.push(current);
+  else next[next.length - 1] = current;
+  return { timeline: next, current };
+}
+
+function replaceToolInTimeline(timeline: AgentWorkSegment[], tool: AgentToolTrace): AgentWorkSegment[] {
+  const next = timeline.map((segment) => ({
+    ...segment,
+    tools: segment.tools ? [...segment.tools] : [],
+  }));
+  for (let i = next.length - 1; i >= 0; i--) {
+    const tools = next[i]!.tools ?? [];
+    const index = tools.findIndex((item) => item.id === tool.id);
+    if (index < 0) continue;
+    tools[index] = tool;
+    next[i] = { ...next[i], tools };
+    return next;
+  }
+  const last = next[next.length - 1];
+  if (last) next[next.length - 1] = { ...last, tools: [...(last.tools ?? []), tool] };
+  return next;
+}
+
+function syncTimelineTools(timeline: AgentWorkSegment[], tools: AgentToolTrace[]): AgentWorkSegment[] {
+  const byId = new Map(tools.map((tool) => [tool.id, tool]));
+  return timeline.map((segment) => ({
+    ...segment,
+    tools: segment.tools?.map((tool) => byId.get(tool.id) ?? tool) ?? [],
+  }));
+}
+
+function finishTimeline(
+  timeline: AgentWorkSegment[] | undefined,
+  tools: AgentToolTrace[],
+  text: string,
+  error: boolean,
+): AgentWorkSegment[] {
+  const next = syncTimelineTools(timeline ?? [], tools);
+  if (!next.length) {
+    const segment = newWorkSegment(error ? "error" : "done");
+    segment.content = text;
+    return [segment];
+  }
+  const last = next[next.length - 1]!;
+  const hasSegmentContent = next.some((segment) => Boolean(segment.content?.trim()));
+  next[next.length - 1] = {
+    ...last,
+    phase: error ? "error" : "done",
+    content: hasSegmentContent ? last.content : text || last.content,
+  };
+  return next.map((segment) => ({ ...segment, phase: error ? "error" : segment.id === last.id ? segment.phase : "done" }));
+}
 
 export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): AgentState {
   switch (event.kind) {
@@ -20,6 +104,13 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
     case "assistant_text": {
       const prev = state.streaming?.content ?? "";
       const nextContent = event.partial ? prev + event.text : event.text;
+      const segmentUpdate = updateCurrentSegment(
+        state.timeline,
+        "reply",
+        (current) => !current || current.phase === "done" || current.phase === "error",
+      );
+      const current = segmentUpdate.current;
+      current.content = event.partial ? `${current.content ?? ""}${event.text}` : event.text;
       return {
         ...state,
         streamComplete: false,
@@ -30,7 +121,9 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
           content: nextContent,
           ts: state.streaming?.ts ?? Date.now(),
           tools: state.streaming?.tools,
+          timeline: segmentUpdate.timeline,
         },
+        timeline: segmentUpdate.timeline,
       };
     }
     case "tool": {
@@ -51,6 +144,23 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         tools[idx] = event.state === "error" ? row : { ...tools[idx], ...row };
       } else tools.push(row);
 
+      const segmentUpdate = updateCurrentSegment(
+        state.timeline,
+        "tools",
+        (current) => Boolean(
+          current && (
+            hasVisibleReply(current) ||
+            current.phase === "done" ||
+            current.phase === "error"
+          ),
+        ),
+      );
+      const timeline = replaceToolInTimeline(segmentUpdate.timeline, row);
+      const current = timeline[timeline.length - 1]!;
+      current.tools = current.tools?.some((tool) => tool.id === row.id)
+        ? current.tools
+        : [...(current.tools ?? []), row];
+
       const mirrorEv: CodingMirrorEvent = {
         id: event.id,
         kind: event.add !== undefined || event.del !== undefined ? "diff" : "tool",
@@ -64,14 +174,31 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         ...state,
         status: state.permission ? "waiting" : event.state === "running" ? "tool" : state.streaming && !state.streamComplete ? "streaming" : "tool",
         tools,
+        timeline,
+        streaming: state.streaming ? { ...state.streaming, timeline } : state.streaming,
         mirror,
       };
     }
     case "thinking_text": {
       const prev = state.thinkingText ?? "";
+      const segmentUpdate = updateCurrentSegment(
+        state.timeline,
+        "thinking",
+        (current) => Boolean(
+          current && (
+            hasVisibleReply(current) ||
+            current.phase === "done" ||
+            current.phase === "error"
+          ),
+        ),
+      );
+      const current = segmentUpdate.current;
+      current.thinking = event.partial ? `${current.thinking ?? ""}${event.text}` : event.text;
       return {
         ...state,
         thinkingText: event.partial ? prev + event.text : event.text,
+        timeline: segmentUpdate.timeline,
+        streaming: state.streaming ? { ...state.streaming, timeline: segmentUpdate.timeline } : state.streaming,
         status: state.permission
           ? "waiting"
           : state.tools?.some((t) => t.state === "running")
@@ -82,6 +209,12 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
       };
     }
     case "permission":
+      {
+        const segmentUpdate = updateCurrentSegment(
+          state.timeline,
+          "waiting",
+          (current) => Boolean(current && (current.phase === "reply" || current.phase === "done" || current.phase === "error")),
+        );
       return {
         ...state,
         status: "waiting",
@@ -95,7 +228,10 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
           file: event.file,
           questions: event.questions,
         },
+        timeline: segmentUpdate.timeline,
+        streaming: state.streaming ? { ...state.streaming, timeline: segmentUpdate.timeline } : state.streaming,
       };
+      }
     case "result": {
       // Local Stop already cleared the turn — ignore bridge "已停止" echo
       if (
@@ -112,6 +248,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         t.state === "running" ? { ...t, state: "done" as const } : t,
       );
       const interrupted = Boolean(event.isError && /已停止/.test(event.text || ""));
+      const timeline = finishTimeline(state.timeline, tools, text, Boolean(event.isError && !interrupted));
       const msg: ChatMessage = {
         id: state.streaming?.id ?? `a-${Date.now()}`,
         role: "assistant",
@@ -125,6 +262,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         usage: event.usage || state.streaming?.usage,
         peakContextUsage: event.peakContextUsage || state.streaming?.peakContextUsage,
         contextRequestCount: event.contextRequestCount ?? state.streaming?.contextRequestCount,
+        timeline,
       };
       // Keep streaming so typewriter can finish; UI flushes via commitStreamingReveal
       return {
@@ -135,6 +273,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         status: (event.isError ? "error" : "idle") as LoopStatus,
         statusLabel: undefined,
         tools,
+        timeline,
       };
     }
     case "compact": {
@@ -144,14 +283,19 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
       };
     }
     case "error": {
+      const tools = (state.tools ?? []).map((t) =>
+        t.state === "running" ? { ...t, state: "error" as const } : t,
+      );
+      const timeline = finishTimeline(state.timeline, tools, `⚠ ${event.text}`, true);
       const msg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: "assistant",
         content: `⚠ ${event.text}`,
         ts: Date.now(),
-        tools: (state.tools ?? []).length ? state.tools : undefined,
+        tools: tools.length ? tools : undefined,
         thinking: state.thinkingText?.trim() || undefined,
         error: true,
+        timeline,
       };
       return {
         ...state,
@@ -160,9 +304,8 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         permission: null,
         status: "error",
         statusLabel: undefined,
-        tools: (state.tools ?? []).map((t) =>
-          t.state === "running" ? { ...t, state: "error" as const } : t,
-        ),
+        tools,
+        timeline,
       };
     }
     default:
@@ -181,6 +324,7 @@ export function commitStreamingReveal(state: AgentState): AgentState {
     streamComplete: false,
     tools: [],
     thinkingText: undefined,
+    timeline: [],
     messages: already ? state.messages : [...state.messages, msg],
   };
 }

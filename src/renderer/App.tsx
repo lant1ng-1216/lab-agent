@@ -65,7 +65,10 @@ import {
   savePermissionMode,
   type PermissionModeId,
 } from "./lib/permissionModes";
-import type { PermissionAction } from "./components/PermissionModal";
+import PermissionModal, {
+  PermissionStatusChip,
+  type PermissionAction,
+} from "./components/PermissionModal";
 import labAppIcon from "../../build/icon.png";
 import StreamingText from "./harness/beautiful-ui/StreamingText";
 import LoadingState from "./harness/beautiful-ui/LoadingState";
@@ -150,11 +153,11 @@ function readNum(key: string, fallback: number, min: number, max: number) {
 }
 
 function initialLab(): AgentState {
-  return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [] };
+  return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [], timeline: [] };
 }
 
 function initialCoding(engine: string): AgentState {
-  return { status: "idle", messages: [], streaming: null, commands: [], mirror: [], tools: [], engine };
+  return { status: "idle", messages: [], streaming: null, commands: [], mirror: [], tools: [], timeline: [], engine };
 }
 
 function makeExperiment(n: number, engine: string, shellMode: ShellMode = "supervisor"): Experiment {
@@ -248,6 +251,7 @@ export default function App() {
     return loadChatModelKey(api.models);
   });
   const [permissionMode, setPermissionMode] = useState<PermissionModeId>(() => loadPermissionMode());
+  const [permissionCollapsed, setPermissionCollapsed] = useState(false);
   const [shellMode, setShellMode] = useState<ShellMode>(() => loadShellMode());
   const [apiKey, setApiKey] = useState("");
   const [apiCredentialAvailable, setApiCredentialAvailable] = useState(false);
@@ -327,6 +331,10 @@ export default function App() {
   const lab = exp?.lab ?? initialLab();
   const coding = exp?.coding ?? initialCoding(engine);
   const nodes = exp?.nodes ?? [];
+
+  useEffect(() => {
+    setPermissionCollapsed(false);
+  }, [activeExp, coding.permission?.requestId]);
 
   const turnToolTraces = useMemo(() => {
     const msgs = coding.messages;
@@ -994,6 +1002,7 @@ export default function App() {
           status: "thinking" as const,
           streaming: null,
           tools: [],
+          timeline: [],
           permission: null,
           thinkingText: undefined,
           statusLabel: "Lab Code 启动中…",
@@ -1017,6 +1026,7 @@ export default function App() {
           streaming: null,
           streamComplete: false,
           tools: [],
+          timeline: [],
           permission: null,
           thinkingText: undefined,
           statusLabel: truncating ? "在记忆节点处续写…" : "继续对话…",
@@ -1115,6 +1125,7 @@ export default function App() {
         streaming: null,
         streamComplete: false,
         tools: [],
+        timeline: [],
         permission: null,
         thinkingText: undefined,
         status: "idle",
@@ -1539,25 +1550,34 @@ export default function App() {
               isNormal &&
               coding.messages.length === 0 &&
               !coding.streaming &&
+              !coding.permission &&
               coding.status !== "thinking";
 
             const composerBlock = (
               <div
-                className={`pointer-events-auto w-full max-w-[640px] ${skinOn ? "lab-skin-glass rounded-[18px]" : ""}`}
+                className={`pointer-events-auto relative w-full max-w-[640px] ${skinOn ? "lab-skin-glass rounded-[18px]" : ""}`}
               >
-                <WorkspacePicker
-                  workdir={activeWorkspace}
-                  preview={!desktopReady}
-                  onPickMac={() => void pickFolder("add-workspace")}
-                  onSelectRecent={selectWorkspace}
-                  onRemoveRecent={(dir) => setWorkdirRecents(removeWorkdirRecent(dir))}
-                  onRemote={() => showToast("远程目录即将开放")}
-                  onStartScratch={() => {
-                    startNewChat();
-                  }}
-                  onUseExisting={() => void pickFolder("add-workspace")}
-                  onNewFolder={() => void pickFolder("add-workspace")}
-                />
+                <div className="flex min-w-0 items-center gap-2">
+                  <WorkspacePicker
+                    workdir={activeWorkspace}
+                    preview={!desktopReady}
+                    onPickMac={() => void pickFolder("add-workspace")}
+                    onSelectRecent={selectWorkspace}
+                    onRemoveRecent={(dir) => setWorkdirRecents(removeWorkdirRecent(dir))}
+                    onRemote={() => showToast("远程目录即将开放")}
+                    onStartScratch={() => {
+                      startNewChat();
+                    }}
+                    onUseExisting={() => void pickFolder("add-workspace")}
+                    onNewFolder={() => void pickFolder("add-workspace")}
+                  />
+                  {isNormal && coding.permission && permissionCollapsed ? (
+                    <PermissionStatusChip
+                      permission={coding.permission}
+                      onClick={() => setPermissionCollapsed(false)}
+                    />
+                  ) : null}
+                </div>
                 <Composer
                   shellMode={shellMode}
                   onSend={dockSend}
@@ -1614,6 +1634,21 @@ export default function App() {
                   }}
                   showToast={showToast}
                 />
+                {isNormal && coding.permission ? (
+                  <div
+                    className={permissionCollapsed
+                      ? "hidden"
+                      : "pointer-events-none absolute bottom-[calc(100%+0.5rem)] left-0 z-40 flex w-full justify-start"}
+                  >
+                    <div className="pointer-events-auto w-[min(560px,100%)] max-w-[calc(100vw-2rem)]">
+                      <PermissionModal
+                        permission={coding.permission}
+                        onAction={respondAgentPermission}
+                        onCollapse={() => setPermissionCollapsed(true)}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             );
 
@@ -1632,7 +1667,6 @@ export default function App() {
                     onQuoteSelection={queueComposerQuote}
                     onResendFromUser={resendFromUser}
                     onWithdrawUser={withdrawUser}
-                    onPermissionAction={respondAgentPermission}
                   />
                   <div className="titlebar-no-drag mt-1 w-full max-w-[640px]">{composerBlock}</div>
                 </div>
@@ -1655,7 +1689,6 @@ export default function App() {
                       onQuoteSelection={queueComposerQuote}
                       onResendFromUser={resendFromUser}
                       onWithdrawUser={withdrawUser}
-                      onPermissionAction={respondAgentPermission}
                     />
                   </div>
                   <div className="titlebar-no-drag relative z-[2] flex shrink-0 justify-center px-4 pb-4 pt-2">

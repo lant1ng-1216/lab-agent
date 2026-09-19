@@ -103,6 +103,7 @@ export default function ThinkingState({
   working: workingProp,
   footer,
   onFileOpen,
+  className,
 }: {
   variant?: string;
   onSettled?: () => void;
@@ -116,6 +117,7 @@ export default function ThinkingState({
   footer?: ReactNode;
   /** Open file / diff preview when a coding row has a file */
   onFileOpen?: (file: string) => void;
+  className?: string;
 }) {
   const isControlled = controlled && Array.isArray(rows);
   const stage = useSequence(STAGES, !isControlled);
@@ -167,7 +169,7 @@ export default function ThinkingState({
   return (
     <div
       key={variant}
-      className="flex w-full max-w-95 flex-col"
+      className={`flex w-full max-w-95 flex-col${className ? ` ${className}` : ""}`}
       style={{
         minHeight: working || expanded ? (isControlled ? undefined : 176) : undefined,
         transition: "min-height 400ms cubic-bezier(0.23,1,0.32,1)",
@@ -211,6 +213,9 @@ export default function ThinkingState({
             </span>
           )}
         </span>
+        {isControlled && v.rows.length > 8 ? (
+          <span className="hidden shrink-0 text-[10.5px] text-ink-3 sm:inline">· 可在内部滚动</span>
+        ) : null}
         <svg
           width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
           className="transition-transform duration-300"
@@ -235,6 +240,10 @@ export default function ThinkingState({
               className="absolute left-[3px] w-px bg-line"
               style={{ top: -8, height: lineHeight ? lineHeight - 2 : 0, transition: "height 500ms cubic-bezier(0.23,1,0.32,1)" }}
             />
+            <div
+              className="relative max-h-[min(36vh,320px)] overflow-y-auto pr-1"
+              style={{ scrollbarGutter: "stable", overscrollBehavior: "contain" }}
+            >
             <div ref={traceRef} className="flex flex-col gap-1 py-1">
             {v.query && !isControlled && (
               <div className="flex h-6 items-center gap-2 px-1.5" style={{ animation: expanded ? "fade-up 300ms cubic-bezier(0.23,1,0.32,1) both" : undefined }}>
@@ -342,8 +351,18 @@ export default function ThinkingState({
             )}
             </div>
             {footer ? <div className="mt-1.5 pb-1">{footer}</div> : null}
+            </div>
+            {isControlled && v.rows.length > 8 ? (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none sticky bottom-0 -mt-6 flex h-6 items-end justify-center pb-0.5 text-[10px] text-ink-3"
+                style={{ background: "linear-gradient(to top, var(--main, var(--lab-main)) 15%, transparent)" }}
+              >
+                向下滚动查看其余工具
+              </div>
+            ) : null}
+            </div>
           </div>
-        </div>
       </div>
     </div>
   );
