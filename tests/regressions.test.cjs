@@ -166,6 +166,19 @@ test("live work uses one chronological timeline and no duplicate reply loader", 
   assert.match(card, /aria-expanded=\{showCustomInput\}/);
 });
 
+test("desktop long-task progress is forwarded as a visible heartbeat", () => {
+  const helpers = fs.readFileSync(path.join(__dirname, "../agents/lab-coding/src/utils/queryHelpers.ts"), "utf8");
+  const bridge = fs.readFileSync(path.join(__dirname, "../src/main/labCodingBridge.ts"), "utf8");
+  const chat = fs.readFileSync(path.join(__dirname, "../src/renderer/components/NormalChatView.tsx"), "utf8");
+  assert.match(helpers, /type: 'tool_progress'/);
+  assert.doesNotMatch(helpers, /Only emit for Claude Code Remote/);
+  assert.match(bridge, /type === 'tool_progress'/);
+  assert.match(bridge, /kind: 'heartbeat'/);
+  assert.match(bridge, /lastActivityAt/);
+  assert.match(chat, /function LiveActivityStatus/);
+  assert.match(chat, /state\.activity/);
+});
+
 test("agent events are grouped into interleaved thinking, tools, and reply segments", () => {
   const turn = fs.readFileSync(path.join(__dirname, "../src/renderer/lib/agentTurn.ts"), "utf8");
   assert.match(turn, /function newWorkSegment/);

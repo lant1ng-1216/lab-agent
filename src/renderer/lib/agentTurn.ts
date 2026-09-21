@@ -101,6 +101,27 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
               ? "tool"
               : "thinking",
       };
+    case "heartbeat":
+      return {
+        ...state,
+        activity: {
+          phase: event.phase,
+          toolName: event.toolName,
+          toolUseId: event.toolUseId,
+          elapsedMs: event.elapsedMs,
+          detail: event.detail,
+          ts: event.ts,
+        },
+        status: state.permission
+          ? "waiting"
+          : event.phase === "tool"
+            ? "tool"
+            : event.phase === "streaming"
+              ? "streaming"
+              : event.phase === "waiting"
+                ? "waiting"
+                : "thinking",
+      };
     case "assistant_text": {
       const prev = state.streaming?.content ?? "";
       const nextContent = event.partial ? prev + event.text : event.text;
@@ -269,6 +290,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         ...state,
         streaming: msg,
         streamComplete: true,
+        activity: null,
         permission: null,
         status: (event.isError ? "error" : "idle") as LoopStatus,
         statusLabel: undefined,
@@ -301,6 +323,7 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         ...state,
         streaming: msg,
         streamComplete: true,
+        activity: null,
         permission: null,
         status: "error",
         statusLabel: undefined,
@@ -322,6 +345,7 @@ export function commitStreamingReveal(state: AgentState): AgentState {
     ...state,
     streaming: null,
     streamComplete: false,
+    activity: null,
     tools: [],
     thinkingText: undefined,
     timeline: [],

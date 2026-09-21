@@ -42,6 +42,15 @@ export interface AgentState {
   thinkingText?: string;
   /** Chronological thinking → tools → reply segments for the live turn. */
   timeline?: AgentWorkSegment[];
+  /** Real-time engine/tool activity, separate from the transcript timeline. */
+  activity?: {
+    phase: 'thinking' | 'tool' | 'streaming' | 'waiting';
+    toolName?: string;
+    toolUseId?: string;
+    elapsedMs?: number;
+    detail?: string;
+    ts: number;
+  } | null;
 }
 
 interface Props {
