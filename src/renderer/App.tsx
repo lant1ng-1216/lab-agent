@@ -18,6 +18,9 @@ import ThinkingAdapter from "./components/ThinkingAdapter";
 import NoticeStack, { type NoticeIcon, type NoticeItem } from "./components/NoticeStack";
 import LineFaceAvatar, { newAvatarSeed } from "./components/LineFaceAvatar";
 import MarkdownBody from "./components/MarkdownBody";
+import SkillsPanel, { extractSkillDraft } from "./components/SkillsPanel";
+import SkillsMarketPanel from "./components/SkillsMarketPanel";
+import AgentsPanel from "./components/AgentsPanel";
 import { loadWorkdirRecents, pushWorkdirRecent, removeWorkdirRecent, workdirLabel } from "./lib/workdirRecents";
 import SidebarSessionList from "./components/SidebarSessionList";
 import { hasLabBridge, LAB_PREVIEW_HINT } from "./lib/labBridge";
@@ -74,83 +77,26 @@ import StreamingText from "./harness/beautiful-ui/StreamingText";
 import LoadingState from "./harness/beautiful-ui/LoadingState";
 import { ApprovalPanel, AssistantBlock, ToolRow, UserBubble } from "@harness";
 
-const SIDEBAR_KEY = "lab.sidebar.width";
-const SIDEBAR_MIN = 220;
-const SIDEBAR_MAX = 360;
-const SIDEBAR_RAIL = 56;
-
-const INSPECTOR_KEY = "lab.inspector.width";
-const INSPECTOR_MIN = 320;
-const INSPECTOR_MAX = 640;
-
-const FILE_SIDE_KEY = "lab.fileSide.width";
-const FILE_SIDE_MIN = 340;
-const FILE_SIDE_MAX = 640;
-
-const PROFILE_KEY = "lab.profile.v1";
-const SHELL_MODE_KEY = "lab.shellMode";
-const DEFAULT_AVATAR_SEED = "lab-guest";
-
-function loadShellMode(): ShellMode {
-  try {
-    const v = localStorage.getItem(SHELL_MODE_KEY);
-    if (v === "supervisor") {
-      // The supervisor shell is still being built. Migrate old installs back
-      // to the only public mode instead of reopening an unfinished workspace.
-      localStorage.setItem(SHELL_MODE_KEY, "normal");
-      return "normal";
-    }
-    if (v === "normal") return v;
-  } catch {}
-  return "normal";
-}
-
-interface LocalProfile {
-  displayName: string;
-  avatarSeed: string;
-}
-
-function loadProfile(): LocalProfile {
-  try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-    if (!raw) return { displayName: "", avatarSeed: DEFAULT_AVATAR_SEED };
-    const d = JSON.parse(raw);
-    return {
-      displayName: typeof d.displayName === "string" ? d.displayName : "",
-      avatarSeed: typeof d.avatarSeed === "string" && d.avatarSeed ? d.avatarSeed : DEFAULT_AVATAR_SEED,
-    };
-  } catch {
-    return { displayName: "", avatarSeed: DEFAULT_AVATAR_SEED };
-  }
-}
-
-interface Engine {
-  id: string;
-  name: string;
-  color: string;
-  abbr: string;
-  preset: boolean;
-}
-const ENGINES: Engine[] = [
-  { id: "lab-deepseek", name: "Lab Coding", color: "#3b82f6", abbr: "L", preset: false },
-  { id: "codex", name: "Codex", color: "#10a37f", abbr: "Cx", preset: true },
-  { id: "cursor", name: "Cursor", color: "#8b5cf6", abbr: "Cu", preset: true },
-  { id: "opencode", name: "OpenCode", color: "#64748b", abbr: "O", preset: true },
-];
-
-function clamp(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, Math.round(v)));
-}
-
-function readNum(key: string, fallback: number, min: number, max: number) {
-  try {
-    const raw = localStorage.getItem(key);
-    const n = raw != null ? Number(raw) : fallback;
-    return Number.isFinite(n) ? clamp(n, min, max) : fallback;
-  } catch {
-    return fallback;
-  }
-}
+import {
+  clamp,
+  loadProfile,
+  loadShellMode,
+  readNum,
+  FILE_SIDE_KEY,
+  FILE_SIDE_MAX,
+  FILE_SIDE_MIN,
+  INSPECTOR_KEY,
+  INSPECTOR_MAX,
+  INSPECTOR_MIN,
+  PROFILE_KEY,
+  SHELL_MODE_KEY,
+  SIDEBAR_KEY,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  SIDEBAR_RAIL,
+  type LocalProfile,
+} from "./app/shell";
+import { NewChatGlyph, SidebarToggleGlyph } from "./app/glyphs";
 
 function initialLab(): AgentState {
   return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [], timeline: [] };
@@ -159,6 +105,22 @@ function initialLab(): AgentState {
 function initialCoding(engine: string): AgentState {
   return { status: "idle", messages: [], streaming: null, commands: [], mirror: [], tools: [], timeline: [], engine };
 }
+
+const DISTILL_SESSION_PROMPT = `请把当前会话整理成一个可复用技能（skill）草稿。
+
+要求：
+1. 回顾本会话：用户的目标、重复出现的流程、用户纠正/强调过的偏好、用过的工具与命令。
+2. 只提炼一个最值得固化的流程，产出一个 SKILL.md 草稿。
+3. **不要调用 Write/Edit，不要写任何文件**——把完整 SKILL.md（含 YAML frontmatter：name、description，以及正文步骤）放在一个 markdown 代码块里输出，等待用户在桌面端确认保存。
+4. name 用小写连字符英文；正文给出明确步骤与成功标准。`;
+
+const DISTILL_WORKSPACE_PROMPT = `请浏览当前工作区，提炼一个最值得固化为技能（skill）的流程或项目约定。
+
+要求：
+1. 快速浏览 README、目录结构、构建/测试脚本、CLAUDE.md 等线索，找出本仓库中重复性强、值得沉淀的流程（如构建验证、发布、代码审查约定）。
+2. 只选一个最优候选，产出一个 SKILL.md 草稿。
+3. **不要调用 Write/Edit，不要写任何文件**——把完整 SKILL.md（含 YAML frontmatter：name、description，以及正文步骤）放在一个 markdown 代码块里输出，等待用户在桌面端确认保存。
+4. name 用小写连字符英文；正文给出明确步骤与成功标准。`;
 
 function makeExperiment(n: number, engine: string, shellMode: ShellMode = "supervisor"): Experiment {
   const isNormal = shellMode === "normal";
@@ -191,45 +153,6 @@ function isCredentialFailure(event: { kind: string; text?: string; isError?: boo
   return /\b401\b|unauthorized|authentication fails|invalid (?:api )?key|api key.*invalid/i.test(event.text || "");
 }
 
-function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <rect x="3.5" y="4" width="17" height="16" rx="3" />
-      <path d="M9 4v16" />
-      {collapsed ? <path d="m14 9 3 3-3 3" /> : <path d="m7 9-3 3 3 3" />}
-    </svg>
-  );
-}
-
-function NewChatGlyph() {
-  return (
-    <svg
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
-    </svg>
-  );
-}
-
 export default function App() {
   const [appearance, setAppearance] = useState<AppearanceState>(() => loadAppearance());
   const theme = appearance.mode;
@@ -242,6 +165,10 @@ export default function App() {
   const [sidebarW, setSidebarW] = useState(() => readNum(SIDEBAR_KEY, 248, SIDEBAR_MIN, SIDEBAR_MAX));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillDraft, setSkillDraft] = useState<string | null>(null);
+  const [marketOpen, setMarketOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<LocalProfile>(() => loadProfile());
   const [profileDraft, setProfileDraft] = useState<LocalProfile>(() => loadProfile());
@@ -1097,6 +1024,28 @@ export default function App() {
     dockSend(text, undefined, { replaceUserId: userId });
   };
 
+  /** Distill current session or workspace into a skill — runs in the current chat. */
+  const distillToSkill = (source: "session" | "workspace") => {
+    setSkillsOpen(false);
+    if (source === "session") {
+      const msgs = activeExp ? experiments.find((e) => e.id === activeExp)?.coding.messages ?? [] : [];
+      if (msgs.length === 0) {
+        showToast("当前会话还没有对话，无法蒸馏");
+        return;
+      }
+    }
+    if (!activeWorkspace) {
+      showToast("请先选择或添加工作区");
+      return;
+    }
+    if (customApi.protocol === "openai-chat") {
+      showToast("当前 Lab Coding 引擎暂不支持 OpenAI Chat，请改用 Anthropic Messages 兼容接口");
+      return;
+    }
+    dockSend(source === "session" ? DISTILL_SESSION_PROMPT : DISTILL_WORKSPACE_PROMPT);
+    showToast("蒸馏任务已发送 · 产出草稿后可确认保存", { icon: "check" });
+  };
+
   const withdrawUser = (userId: string, text: string) => {
     if (!activeExp) return;
     const existing = experiments.find((e) => e.id === activeExp);
@@ -1234,12 +1183,15 @@ export default function App() {
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "n") { e.preventDefault(); startNewChat(); }
       else if (meta && e.key === ",") { e.preventDefault(); setSettingsOpen((v) => !v); }
-      else if (e.key === "Escape") { setInspector(null); setSettingsOpen(false); setProfileOpen(false); setCustomApiOpen(false); setDeleteConfirm(null); setRenaming(null); }
+      else if (e.key === "Escape") {
+        // Panels own their Escape (SkillsPanel confirms unsaved edits first).
+        if (!skillsOpen && !agentsOpen && !marketOpen) { setInspector(null); setSettingsOpen(false); setProfileOpen(false); setCustomApiOpen(false); setDeleteConfirm(null); setRenaming(null); }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [experiments, engine, activeExp, nodes]);
+  }, [experiments, engine, activeExp, nodes, skillsOpen, agentsOpen, marketOpen]);
 
   // resizers
   const startSidebarResize = (e: React.MouseEvent) => {
@@ -1472,6 +1424,33 @@ export default function App() {
             <button
               type="button"
               className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+              onClick={() => setSkillsOpen(true)}
+              title="技能管理"
+              aria-label="技能管理"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+              onClick={() => setMarketOpen(true)}
+              title="技能市场"
+              aria-label="技能市场"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 9l2.2-5.3A1 1 0 0 1 6.1 3h11.8a1 1 0 0 1 .9.7L21 9"/><path d="M9 13h6"/></svg>
+            </button>
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+              onClick={() => setAgentsOpen(true)}
+              title="智能体管理"
+              aria-label="智能体管理"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><circle cx="9" cy="13" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1" fill="currentColor" stroke="none"/><path d="M9 17h6"/></svg>
+            </button>
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
               onClick={() => setSettingsOpen(true)}
               title="设置 (⌘,)"
               aria-label="设置"
@@ -1667,6 +1646,11 @@ export default function App() {
                     onQuoteSelection={queueComposerQuote}
                     onResendFromUser={resendFromUser}
                     onWithdrawUser={withdrawUser}
+                    onSaveAsSkill={(content) => {
+                      setSkillDraft(content);
+                      setSkillsOpen(true);
+                    }}
+                    onPermissionAction={respondAgentPermission}
                   />
                   <div className="titlebar-no-drag mt-1 w-full max-w-[640px]">{composerBlock}</div>
                 </div>
@@ -1689,6 +1673,11 @@ export default function App() {
                       onQuoteSelection={queueComposerQuote}
                       onResendFromUser={resendFromUser}
                       onWithdrawUser={withdrawUser}
+                      onSaveAsSkill={(content) => {
+                        setSkillDraft(content);
+                        setSkillsOpen(true);
+                      }}
+                      onPermissionAction={respondAgentPermission}
                     />
                   </div>
                   <div className="titlebar-no-drag relative z-[2] flex shrink-0 justify-center px-4 pb-4 pt-2">
@@ -2020,6 +2009,25 @@ export default function App() {
             </div>
           </div>
         ) : null}
+
+        {/* Skills management modal */}
+        <SkillsPanel
+          open={skillsOpen}
+          workspacePath={activeWorkspace ?? ""}
+          hasSession={Boolean(activeExp && (experiments.find((e) => e.id === activeExp)?.coding.messages.length ?? 0) > 0)}
+          onClose={() => setSkillsOpen(false)}
+          onDistill={distillToSkill}
+          draft={skillDraft}
+          onDiscardDraft={() => setSkillDraft(null)}
+        />
+        <AgentsPanel open={agentsOpen} workspacePath={activeWorkspace ?? ""} onClose={() => setAgentsOpen(false)} />
+        <SkillsMarketPanel
+          open={marketOpen}
+          workspacePath={activeWorkspace ?? ""}
+          onClose={() => setMarketOpen(false)}
+          onToast={(msg, opts) => showToast(msg, opts)}
+          onInstalled={() => { /* skills panel refreshes on its own open */ }}
+        />
 
         {/* Settings modal (centered) */}
         {settingsOpen ? (
