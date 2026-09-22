@@ -6,7 +6,6 @@ import type { LabNodeKind } from "./canvas/LabNode";
 import FileTree from "./components/FileTree";
 import Composer from "./components/Composer";
 import NormalChatView from "./components/NormalChatView";
-import { SectionTokenMeter } from "./components/TokenUsageMeter";
 import FileWorkspaceSidebar, {
   FILE_SIDEBAR_DEFAULT_WIDTH,
 } from "./components/FileWorkspaceSidebar";
@@ -96,7 +95,7 @@ import {
   SIDEBAR_RAIL,
   type LocalProfile,
 } from "./app/shell";
-import { NewChatGlyph, SidebarToggleGlyph } from "./app/glyphs";
+import TitleBar from "./app/regions/TitleBar";
 
 function initialLab(): AgentState {
   return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [], timeline: [] };
@@ -1248,62 +1247,18 @@ export default function App() {
       ) : null}
 
       {/* One shared window chrome row keeps macOS controls and the content header aligned. */}
-      <div
-        className={`titlebar-drag relative z-[4] flex h-11 shrink-0 items-center border-b border-[var(--lab-border-soft)] ${
-          skinOn ? "lab-skin-glass" : ""
-        }`}
-        style={{
-          background: skinOn
-            ? "color-mix(in srgb, var(--lab-surface-solid) 72%, transparent)"
-            : "var(--lab-main)",
-        }}
-      >
-        <div className={`flex min-w-0 flex-1 items-center gap-1.5 pr-3 ${isMacPlatform ? "pl-[78px]" : "pl-2"}`}>
-          <button
-            type="button"
-            className="titlebar-no-drag flex size-8 shrink-0 items-center justify-center rounded-[9px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-            onClick={() => setSidebarCollapsed((value) => !value)}
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-          >
-            <SidebarToggleGlyph collapsed={sidebarCollapsed} />
-          </button>
-          <button
-            type="button"
-            className="titlebar-no-drag flex size-8 shrink-0 items-center justify-center rounded-[9px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-            onClick={startNewChat}
-            title="新对话"
-            aria-label="新对话"
-          >
-            <NewChatGlyph />
-          </button>
-          <span className="mx-1 h-5 w-px shrink-0 bg-[var(--lab-border)]" aria-hidden />
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[12.5px]">
-            <span className="shrink-0 text-[var(--lab-ink-3)]">{isNormal ? "对话" : "实验"}</span>
-            <span className="shrink-0 text-[var(--lab-ink-3)]">/</span>
-            <span className="truncate font-medium text-[var(--lab-ink)]">
-              {exp?.name ?? (isNormal ? "新对话" : "新实验")}
-            </span>
-            {activeWorkspace ? (
-              <span
-                className="ml-1 truncate font-[var(--lab-mono)] text-[11px] text-[var(--lab-ink-3)]"
-                title={activeWorkspace}
-              >
-                {activeWorkspace.split(/[/\\]/).filter(Boolean).pop()}
-              </span>
-            ) : null}
-            {isNormal ? (
-              <SectionTokenMeter
-                totals={exp?.tokenTotals}
-                compactHint={
-                  coding.statusLabel && /压缩/.test(coding.statusLabel) ? coding.statusLabel : null
-                }
-                variant="titlebar"
-              />
-            ) : null}
-          </div>
-        </div>
-      </div>
+      <TitleBar
+        skinOn={skinOn}
+        isMacPlatform={isMacPlatform}
+        isNormal={isNormal}
+        sessionName={exp?.name ?? null}
+        activeWorkspace={activeWorkspace}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+        onNewChat={startNewChat}
+        tokenTotals={exp?.tokenTotals}
+        compactHint={coding.statusLabel && /压缩/.test(coding.statusLabel) ? coding.statusLabel : null}
+      />
 
       <div className="relative z-[1] flex min-h-0 min-w-0 flex-1">
         {/* ============ Left sidebar ============ */}
