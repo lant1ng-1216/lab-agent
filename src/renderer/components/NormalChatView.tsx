@@ -437,6 +437,48 @@ function MessageTools({
   );
 }
 
+function formatActivityDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function LiveActivityStatus({
+  activity,
+  now,
+}: {
+  activity: NonNullable<AgentState["activity"]>;
+  now: number;
+}) {
+  const elapsed = (activity.elapsedMs ?? 0) + Math.max(0, now - activity.ts);
+  const idleFor = Math.max(0, now - activity.ts);
+  const label =
+    activity.phase === "tool"
+      ? `正在执行 · ${activity.toolName || "工具"}`
+      : activity.phase === "streaming"
+        ? "正在生成"
+        : activity.phase === "waiting"
+          ? "等待你的决定"
+          : "正在思考";
+  const recent = idleFor < 2000 ? "刚刚有活动" : `${formatActivityDuration(idleFor)} 前有活动`;
+
+  return (
+    <div
+      className="mt-1 flex min-w-0 items-center gap-2 px-1 text-[11px] text-[var(--lab-ink-3)]"
+      aria-live="polite"
+      aria-label={`${label}，已运行 ${formatActivityDuration(elapsed)}`}
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-[var(--lab-accent)] motion-safe:animate-pulse" />
+      <span className="truncate">{label}</span>
+      <span className="shrink-0 tabular-nums">{formatActivityDuration(elapsed)}</span>
+      <span className="ml-auto shrink-0 text-[var(--lab-ink-4)]">{recent}</span>
+      {activity.detail ? <span className="hidden shrink-0 sm:inline">· {activity.detail}</span> : null}
+    </div>
+  );
+}
+
 function SegmentText({
   text,
   live = false,
@@ -796,6 +838,14 @@ export default function NormalChatView({
     hasPermission: Boolean(state.permission),
   });
   const busy = turnWorking;
+  const [activityNow, setActivityNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!turnWorking || !state.activity) return;
+    setActivityNow(Date.now());
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [turnWorking, state.activity?.ts]);
 
   const scheduleFollowResume = useCallback(() => {
     clearFollowResumeTimer();
@@ -1101,6 +1151,9 @@ export default function NormalChatView({
                     ) : null}
                   </>
                 )}
+                {turnWorking && state.activity ? (
+                  <LiveActivityStatus activity={state.activity} now={activityNow} />
+                ) : null}
                 {state.streamComplete ? (
                   <TurnTokenFooter usage={state.streaming?.usage} />
                 ) : null}

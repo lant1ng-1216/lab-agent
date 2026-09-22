@@ -234,6 +234,15 @@ export type AgentBridgeEvent =
   | { kind: 'status'; text: string }
   | { kind: 'assistant_text'; text: string; partial?: boolean }
   | {
+      kind: 'heartbeat'
+      phase: 'thinking' | 'tool' | 'streaming' | 'waiting'
+      toolName?: string
+      toolUseId?: string
+      elapsedMs?: number
+      detail?: string
+      ts: number
+    }
+  | {
       kind: 'tool';
       id: string;
       name: string;

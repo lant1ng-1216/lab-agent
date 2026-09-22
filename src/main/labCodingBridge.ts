@@ -22,6 +22,15 @@ export type BridgeEvent =
   | { kind: 'assistant_text'; text: string; partial?: boolean }
   | { kind: 'thinking_text'; text: string; partial?: boolean }
   | {
+      kind: 'heartbeat'
+      phase: 'thinking' | 'tool' | 'streaming' | 'waiting'
+      toolName?: string
+      toolUseId?: string
+      elapsedMs?: number
+      detail?: string
+      ts: number
+    }
+  | {
       kind: 'tool'
       id: string
       name: string
@@ -137,6 +146,7 @@ type SessionState = {
   toolStartedAt: Map<string, number>
   pendingPermInput: Map<string, Record<string, unknown>>
   lastActivityAt: number
+  lastHeartbeatEmittedAt: number
   idleTimer?: ReturnType<typeof setInterval>
   assistantAccum: string
   thinkingAccum: string
@@ -508,6 +518,7 @@ function emptyState(): SessionState {
     tools: new Map(),
     pendingPermInput: new Map(),
     lastActivityAt: Date.now(),
+    lastHeartbeatEmittedAt: 0,
     turnBusy: false,
     turnStartedAt: 0,
     assistantAccum: '',
@@ -627,6 +638,26 @@ export class LabCodingBridge {
     s.lastActivityAt = Date.now()
   }
 
+  private emitHeartbeat(
+    sessionKey: string,
+    s: SessionState,
+    phase: Extract<BridgeEvent, { kind: 'heartbeat' }>['phase'],
+    options: Omit<Extract<BridgeEvent, { kind: 'heartbeat' }>, 'kind' | 'phase' | 'ts'> = {},
+    force = false,
+  ) {
+    const now = Date.now()
+    // Text deltas can arrive rapidly. Keep the UI event stream light while
+    // allowing real tool_progress messages to bypass the throttle.
+    if (!force && now - s.lastHeartbeatEmittedAt < 1000) return
+    s.lastHeartbeatEmittedAt = now
+    this.emit(sessionKey, {
+      kind: 'heartbeat',
+      phase,
+      ...options,
+      ts: now,
+    })
+  }
+
   private finalizeRunningTools(s: SessionState, sessionKey: string, asError: boolean) {
     for (const [id, tool] of s.tools) {
       if (tool.state === 'running') {
@@ -675,6 +706,7 @@ export class LabCodingBridge {
     s.turnHadPartials = false
     s.turnHadThinkingPartials = false
     s.lastAssistantUuid = undefined
+    s.lastHeartbeatEmittedAt = 0
     s.pendingPermInput = new Map()
     s.toolStartedAt.clear()
     this.touchActivity(s)
@@ -961,10 +993,42 @@ export class LabCodingBridge {
       s.claudeSessionId = obj.session_id
     }
 
+    if (type === 'tool_progress') {
+      const parentToolUseId = typeof obj.parent_tool_use_id === 'string' ? obj.parent_tool_use_id : undefined
+      const emittedToolUseId = typeof obj.tool_use_id === 'string' ? obj.tool_use_id : undefined
+      const toolUseId = parentToolUseId || emittedToolUseId
+      const toolName = typeof obj.tool_name === 'string' ? obj.tool_name : 'Tool'
+      const elapsedSeconds = typeof obj.elapsed_time_seconds === 'number' ? obj.elapsed_time_seconds : undefined
+      const activeTool = [...s.tools.values()].find((tool) => tool.state === 'running' && tool.name === toolName)
+      const startedAt = toolUseId ? s.toolStartedAt.get(toolUseId) : undefined
+      const elapsedMs = elapsedSeconds !== undefined
+        ? Math.max(0, Math.round(elapsedSeconds * 1000))
+        : startedAt
+          ? Math.max(0, Date.now() - startedAt)
+          : undefined
+      const taskId = typeof obj.task_id === 'string' && obj.task_id ? obj.task_id : undefined
+      this.emitHeartbeat(
+        sessionKey,
+        s,
+        'tool',
+        {
+          toolName,
+          toolUseId: toolUseId || activeTool?.id,
+          elapsedMs,
+          detail: taskId ? `任务 ${taskId}` : undefined,
+        },
+        true,
+      )
+      return
+    }
+
     const thinkingDelta = extractThinkingDelta(obj)
     if (thinkingDelta) {
       s.turnHadThinkingPartials = true
       s.thinkingAccum += thinkingDelta
+      this.emitHeartbeat(sessionKey, s, 'thinking', {
+        elapsedMs: Math.max(0, Date.now() - s.turnStartedAt),
+      })
       this.emit(sessionKey, { kind: 'thinking_text', text: thinkingDelta, partial: true })
       return
     }
@@ -973,11 +1037,17 @@ export class LabCodingBridge {
     if (delta) {
       s.turnHadPartials = true
       s.assistantAccum += delta
+      this.emitHeartbeat(sessionKey, s, 'streaming', {
+        elapsedMs: Math.max(0, Date.now() - s.turnStartedAt),
+      })
       this.emit(sessionKey, { kind: 'assistant_text', text: delta, partial: true })
       return
     }
 
     if (type === 'control_request') {
+      this.emitHeartbeat(sessionKey, s, 'waiting', {
+        elapsedMs: Math.max(0, Date.now() - s.turnStartedAt),
+      })
       const requestId = typeof obj.request_id === 'string' ? obj.request_id : ''
       const request = obj.request as Record<string, unknown> | undefined
       if (request?.subtype === 'can_use_tool' && requestId) {
@@ -1060,6 +1130,12 @@ export class LabCodingBridge {
         s.lastAssistantUuid = obj.uuid
       }
       const message = obj.message
+      const assistantTools = extractToolUses(message)
+      this.emitHeartbeat(sessionKey, s, assistantTools.length ? 'tool' : 'thinking', {
+        toolName: assistantTools[0]?.name,
+        toolUseId: assistantTools[0]?.id,
+        elapsedMs: Math.max(0, Date.now() - s.turnStartedAt),
+      })
       if (message && typeof message === 'object') {
         const apiMessage = message as Record<string, unknown>
         const messageId = typeof apiMessage.id === 'string' ? apiMessage.id : ''
@@ -1070,7 +1146,7 @@ export class LabCodingBridge {
           s.peakRequestUsage = choosePeakContextUsage(s.peakRequestUsage, requestUsage)
         }
       }
-      for (const tool of extractToolUses(message)) {
+      for (const tool of assistantTools) {
         s.tools.set(tool.id, tool)
         if (/bash|shell|powershell|terminal|command|run/i.test(tool.name)) {
           s.toolStartedAt.set(tool.id, Date.now())
@@ -1094,6 +1170,9 @@ export class LabCodingBridge {
     }
 
     if (type === 'user') {
+      this.emitHeartbeat(sessionKey, s, 'thinking', {
+        elapsedMs: Math.max(0, Date.now() - s.turnStartedAt),
+      })
       for (const res of extractToolResults(obj.message)) {
         const prev = s.tools.get(res.id)
         const startedAt = s.toolStartedAt.get(res.id)
