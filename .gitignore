@@ -20,10 +20,21 @@ Lab-Agent-0.1.1.app/
 # Icon work backups
 build/*.bak-*
 
+# Local tool caches / scratch space (never commit)
+.codegraph/
+scratch/
+.workbuddy/
+
 # Lab Coding engine — local artifacts / secrets
 agents/lab-coding/node_modules/
 agents/lab-coding/cli
 agents/lab-coding/cli-dev
+# Windows builds land as cli-dev.exe / cli.exe, and hand-made backups as
+# *.bak-<date>; the un-suffixed patterns above miss both, which used to leave
+# ~110 MB of engine binaries stageable by a plain `git add -A`.
+agents/lab-coding/cli-dev*
+agents/lab-coding/cli.exe*
+agents/lab-coding/bin/
 agents/lab-coding/dist/
 agents/lab-coding/lab-agent.env
 agents/lab-coding/freecode.env
