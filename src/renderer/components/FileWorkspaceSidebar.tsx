@@ -43,6 +43,80 @@ function relToWorkdir(workdir: string | null, abs: string) {
   return abs;
 }
 
+/** Live per-file activity derived from the current turn's tool traces. */
+type FileActivity = {
+  status: "created" | "modified" | "read";
+  add: number;
+  del: number;
+  state: AgentToolTrace["state"];
+};
+
+const ACTIVITY_RANK = { read: 1, modified: 2, created: 3 } as const;
+
+function collectFileActivity(tools: AgentToolTrace[]): Map<string, FileActivity> {
+  const map = new Map<string, FileActivity>();
+  for (const t of tools) {
+    if (!t.file) continue;
+    const name = (t.name || "").toLowerCase();
+    const isWrite = name.includes("write") || name.includes("createfile");
+    const isEdit = name.includes("edit") || name.includes("replace");
+    const isRead = name.includes("read") || name.includes("view") || name.includes("glob") || name.includes("grep");
+    if (!isWrite && !isEdit && !isRead) continue;
+    const next: FileActivity["status"] = isWrite ? "created" : isEdit ? "modified" : "read";
+    const prev = map.get(t.file);
+    map.set(t.file, {
+      // Keep the strongest thing the agent did to this file this turn.
+      status: prev && ACTIVITY_RANK[prev.status] > ACTIVITY_RANK[next] ? prev.status : next,
+      add: (prev?.add ?? 0) + (t.add ?? 0),
+      del: (prev?.del ?? 0) + (t.del ?? 0),
+      state: t.state,
+    });
+  }
+  return map;
+}
+
+function activityLabel(act: FileActivity): string {
+  if (act.status === "read") return "读";
+  if (act.status === "created") return "新";
+  const parts: string[] = [];
+  if (act.add) parts.push(`+${act.add}`);
+  if (act.del) parts.push(`−${act.del}`);
+  return parts.join(" ") || "改";
+}
+
+function activityTone(act: FileActivity): string {
+  if (act.state === "error") return "border-[var(--lab-red)]/40 text-[var(--lab-red)]";
+  if (act.state === "running") return "border-[var(--lab-accent)]/40 text-[var(--lab-accent)] motion-safe:animate-pulse";
+  if (act.status === "read") return "border-[var(--lab-border)] text-[var(--lab-ink-3)]";
+  return "border-[var(--lab-green,#3ecf8e)]/40 text-[var(--lab-green,#3ecf8e)]";
+}
+
+/** Directories from `root` down to (and including) the parent of `abs`. */
+function ancestorDirs(root: string, abs: string): string[] {
+  const r = root.replace(/\\/g, "/").replace(/\/$/, "");
+  const a = abs.replace(/\\/g, "/");
+  if (a !== r && !a.startsWith(r + "/")) return [];
+  const parts = a.slice(r.length).split("/").filter(Boolean);
+  parts.pop();
+  const out = [root];
+  let cur = root;
+  for (const p of parts) {
+    cur = joinPath(cur, p);
+    out.push(cur);
+  }
+  return out;
+}
+
+const FOLLOW_KEY = "lab.fileFollow";
+
+function loadFollow(): boolean {
+  try {
+    return localStorage.getItem(FOLLOW_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 function CodeLines({ content }: { content: string }) {
   const lines = useMemo(() => {
     const raw = content.length > 120_000 ? `${content.slice(0, 120_000)}\n…` : content;
@@ -123,15 +197,20 @@ function DiffLines({ lines }: { lines: NonNullable<FilePreviewPayload["lines"]> 
 function WorkspaceTree({
   root,
   selected,
+  activity,
+  follow,
   onOpen,
 }: {
   root: string;
   selected: string | null;
+  activity: Map<string, FileActivity>;
+  follow: boolean;
   onOpen: (absPath: string) => void;
 }) {
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([root]));
   const [loading, setLoading] = useState(true);
+  const treeRef = useRef<HTMLDivElement | null>(null);
 
   const loadDir = useCallback(async (dir: string) => {
     const list = (await window.lab?.listFiles(dir)) ?? [];
@@ -155,6 +234,49 @@ function WorkspaceTree({
     if (!children[dir]) await loadDir(dir);
   };
 
+  // Follow the agent: when a touched file's parent dirs are not loaded yet,
+  // fetch them (once) so we can reveal + highlight the file in the tree.
+  const revealKey = useMemo(() => [...activity.keys()].sort().join("|"), [activity]);
+  useEffect(() => {
+    if (!follow || !revealKey) return;
+    const touched = revealKey.split("|").filter(Boolean);
+    let cancelled = false;
+    void (async () => {
+      const need = new Set<string>();
+      for (const file of touched) {
+        for (const dir of ancestorDirs(root, file)) {
+          if (dir !== root && children[dir] === undefined) need.add(dir);
+        }
+      }
+      if (!need.size) return;
+      const dirs = [...need];
+      const lists = await Promise.all(
+        dirs.map(async (dir) => [dir, (await window.lab?.listFiles(dir)) ?? []] as const),
+      );
+      if (cancelled) return;
+      setChildren((prev) => {
+        const next = { ...prev };
+        for (const [dir, list] of lists) if (next[dir] === undefined) next[dir] = list;
+        return next;
+      });
+      setExpanded((s) => new Set([...s, ...dirs]));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [follow, revealKey, root, children]);
+
+  // Scroll the most recently touched file into view.
+  const firstTouched = useMemo(() => {
+    for (const t of [...activity.entries()].reverse()) return t[0];
+    return null;
+  }, [activity]);
+  useEffect(() => {
+    if (!follow || !firstTouched) return;
+    const el = treeRef.current?.querySelector<HTMLElement>(`[data-file="${CSS.escape(firstTouched)}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [follow, firstTouched, children, expanded]);
+
   const renderDir = (dir: string, depth: number) => {
     const list = children[dir] ?? [];
     return list.map((f) => {
@@ -162,16 +284,20 @@ function WorkspaceTree({
       const isDir = f.type === "dir";
       const isOpen = expanded.has(abs);
       const active = !isDir && (selected === abs || selected?.endsWith("/" + f.name));
+      const act = !isDir ? activity.get(abs) : undefined;
       return (
         <div key={abs}>
           <button
             type="button"
             title={abs}
+            data-file={!isDir ? abs : undefined}
             onClick={() => (isDir ? void toggle(abs) : onOpen(abs))}
             className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[12px] ${
               active
                 ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]"
-                : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+                : act
+                  ? "bg-[var(--lab-accent)]/[0.06] text-[var(--lab-ink)]"
+                  : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
             }`}
             style={{ paddingLeft: 8 + depth * 12 }}
           >
@@ -179,6 +305,14 @@ function WorkspaceTree({
               {isDir ? (isOpen ? "▾" : "▸") : "·"}
             </span>
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
+            {act ? (
+              <span
+                className={`shrink-0 rounded border px-1 py-px text-[9px] leading-none ${activityTone(act)}`}
+                title={act.status === "created" ? "本轮新建" : act.status === "modified" ? "本轮修改" : "本轮读取"}
+              >
+                {activityLabel(act)}
+              </span>
+            ) : null}
           </button>
           {isDir && isOpen ? renderDir(abs, depth + 1) : null}
         </div>
@@ -195,7 +329,7 @@ function WorkspaceTree({
     return <div className="px-3 py-3 text-[11.5px] text-[var(--lab-ink-3)]">空目录</div>;
   }
 
-  return <div className="py-1">{renderDir(root, 0)}</div>;
+  return <div className="py-1" ref={treeRef}>{renderDir(root, 0)}</div>;
 }
 
 function FileList({
@@ -266,7 +400,16 @@ export default function FileWorkspaceSidebar({
   const [browse, setBrowse] = useState<BrowseTab>("tree");
   const [viewTab, setViewTab] = useState<"file" | "diff">("file");
   const [recents, setRecents] = useState<string[]>([]);
+  const [follow, setFollow] = useState(loadFollow);
   const drag = useRef<{ startX: number; startW: number } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FOLLOW_KEY, follow ? "1" : "0");
+    } catch {
+      /* ignore quota / private-mode failures */
+    }
+  }, [follow]);
 
   useEffect(() => {
     setRecents(loadFileRecents(sessionKey));
@@ -313,6 +456,15 @@ export default function FileWorkspaceSidebar({
       if (!map.has(t.file)) map.set(t.file, label);
     }
     return [...map.entries()].map(([path, badge]) => ({ path, badge }));
+  }, [tools]);
+
+  const fileActivity = useMemo(() => collectFileActivity(tools), [tools]);
+
+  const activeFileName = useMemo(() => {
+    for (const t of [...tools].reverse()) {
+      if (t.file && t.state === "running") return fileName(t.file);
+    }
+    return null;
   }, [tools]);
 
   const turnBadges = useMemo(() => {
@@ -455,11 +607,37 @@ export default function FileWorkspaceSidebar({
           ›
         </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-medium text-[var(--lab-ink)]">文件</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12.5px] font-medium text-[var(--lab-ink)]">文件</span>
+            {follow && activeFileName ? (
+              <span className="flex min-w-0 items-center gap-1 text-[10px] text-[var(--lab-accent)]" title={activeFileName}>
+                <span className="size-1.5 shrink-0 rounded-full bg-[var(--lab-accent)] motion-safe:animate-pulse" />
+                <span className="truncate font-[var(--lab-mono)]">{activeFileName}</span>
+              </span>
+            ) : null}
+          </div>
           <div className="truncate font-[var(--lab-mono)] text-[10px] text-[var(--lab-ink-3)]" title={workdir ?? undefined}>
             {workdir ? fileName(workdir) : "未绑定工作区"}
           </div>
         </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={follow}
+          aria-label={follow ? "关闭跟随 agent" : "开启跟随 agent"}
+          title={follow ? "跟随 agent：开 · 自动定位到本轮改动的文件" : "跟随 agent：关"}
+          onClick={() => setFollow((v) => !v)}
+          className={`flex size-6 shrink-0 items-center justify-center rounded-md border text-[11px] ${
+            follow
+              ? "border-[var(--lab-accent)]/40 bg-[var(--lab-accent)]/10 text-[var(--lab-accent)]"
+              : "border-[var(--lab-border-soft)] text-[var(--lab-ink-3)] hover:text-[var(--lab-ink)]"
+          }`}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" />
+          </svg>
+        </button>
         <div className="flex rounded-md border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] p-0.5 text-[11px]">
           {(
             [
@@ -490,7 +668,7 @@ export default function FileWorkspaceSidebar({
           {!workdir ? (
             <div className="px-3 py-4 text-[11.5px] text-[var(--lab-ink-3)]">先选择工作区，即可浏览文件。</div>
           ) : browse === "tree" ? (
-            <WorkspaceTree root={workdir} selected={preview?.path ?? null} onOpen={(p) => void openAbs(p)} />
+            <WorkspaceTree root={workdir} selected={preview?.path ?? null} activity={fileActivity} follow={follow} onOpen={(p) => void openAbs(p)} />
           ) : browse === "turn" ? (
             <FileList
               paths={turnFiles.map((t) => t.path)}
