@@ -11,7 +11,6 @@ import FileWorkspaceSidebar, {
 } from "./components/FileWorkspaceSidebar";
 import type { FilePreviewPayload } from "./components/FileInspectSidebar";
 import { pushFileRecent } from "./lib/fileRecents";
-import ShellModeToggle from "./components/ShellModeToggle";
 import WorkspacePicker from "./components/WorkspacePicker";
 import ThinkingAdapter from "./components/ThinkingAdapter";
 import NoticeStack, { type NoticeIcon, type NoticeItem } from "./components/NoticeStack";
@@ -21,7 +20,6 @@ import SkillsPanel, { extractSkillDraft } from "./components/SkillsPanel";
 import SkillsMarketPanel from "./components/SkillsMarketPanel";
 import AgentsPanel from "./components/AgentsPanel";
 import { loadWorkdirRecents, pushWorkdirRecent, removeWorkdirRecent, workdirLabel } from "./lib/workdirRecents";
-import SidebarSessionList from "./components/SidebarSessionList";
 import { hasLabBridge, LAB_PREVIEW_HINT } from "./lib/labBridge";
 import { applyAgentEvent, commitStreamingReveal, toolsToThinkingRows } from "./lib/agentTurn";
 import { addUsageToTotals } from "./lib/tokenUsage";
@@ -92,10 +90,10 @@ import {
   SIDEBAR_KEY,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
-  SIDEBAR_RAIL,
   type LocalProfile,
 } from "./app/shell";
 import TitleBar from "./app/regions/TitleBar";
+import Sidebar from "./app/regions/Sidebar";
 
 function initialLab(): AgentState {
   return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [], timeline: [] };
@@ -1262,184 +1260,69 @@ export default function App() {
 
       <div className="relative z-[1] flex min-h-0 min-w-0 flex-1">
         {/* ============ Left sidebar ============ */}
-      <aside
-        className={`titlebar-drag relative z-[1] flex shrink-0 flex-col border-r border-[var(--lab-border-soft)] bg-[var(--lab-sidebar)] ${
-          skinOn ? "lab-skin-glass" : ""
-        }`}
-        style={{ width: sidebarCollapsed ? SIDEBAR_RAIL : sidebarW, transition: sidebarCollapsed ? "width 0.18s ease" : undefined }}
-      >
-        {!sidebarCollapsed ? (
-          <div className="shrink-0 border-b border-[var(--lab-border-soft)]">
-            <div className="flex h-[52px] items-center gap-2 px-3">
-              <img
-                src={labAppIcon}
-                alt="Lab Agent"
-                width={27}
-                height={27}
-                draggable={false}
-                className="size-[27px] shrink-0 rounded-[7px] object-contain"
-              />
-              <ShellModeToggle mode={shellMode} onToggle={pushSupervisorSoonNotice} />
-            </div>
-          </div>
-        ) : null}
-
-        <div className="titlebar-no-drag min-h-0 flex-1 overflow-y-auto px-2 py-2.5">
-          {/* session / experiment list */}
-          <SidebarSessionList
-            experiments={experiments}
-            activeExp={activeExp}
-            activeWorkspace={activeWorkspace}
-            isNormal={isNormal}
-            collapsed={sidebarCollapsed}
-            renaming={renaming}
-            recents={workdirRecents}
-            onNew={startNewChat}
-            onNewInWorkspace={startNewChatInWorkspace}
-            onPickWorkspace={() => void pickFolder("add-workspace")}
-            onRemoveWorkspace={removeWorkspace}
-            onRenameStart={(id) => setRenaming(id)}
-            onRenameCommit={(id, name) => renameExperiment(id, name)}
-            onRenameCancel={() => setRenaming(null)}
-            onSwitch={switchExperiment}
-            onDeleteAsk={(id) => setDeleteConfirm(id)}
-            onTogglePin={(id) => {
-              setExperiments((xs) =>
-                xs.map((e) => (e.id === id ? { ...e, pinned: !e.pinned } : e)),
-              );
-            }}
-            onToggleArchive={(id) => {
-              setExperiments((xs) =>
-                xs.map((e) =>
-                  e.id === id
-                    ? { ...e, archived: !e.archived, pinned: e.archived ? e.pinned : false }
-                    : e,
-                ),
-              );
-            }}
-            onSelectWorkspace={selectWorkspace}
-            onOpenSkills={() => setSkillsOpen(true)}
-            onOpenSkillsMarket={() => setMarketOpen(true)}
-            onOpenAgents={() => setAgentsOpen(true)}
-          />
-
-          {/* supervisor-only: current experiment agent rows */}
-          {!isNormal && exp ? (
-            <div className="mb-3">
-              {!sidebarCollapsed ? (
-                <div className="mb-1 px-1.5 text-[10px] font-semibold tracking-[0.08em] text-[var(--lab-ink-3)]">当前实验</div>
-              ) : null}
-              {(
-                [
-                  { kind: "lab" as const, label: `Lab · ${lab.status}`, state: lab },
-                  { kind: "coding" as const, label: `Coding · ${coding.status}`, state: coding },
-                ]
-              ).map((row) => (
-                <button
-                  key={row.kind}
-                  type="button"
-                  onClick={() => { setTarget(row.kind); if (nodes.includes(row.kind)) setInspector(row.kind); }}
-                  className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] ${
-                    inspector === row.kind
-                      ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]"
-                      : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-                  }`}
-                  title={sidebarCollapsed ? row.label : undefined}
-                >
-                  <span className="size-1.5 shrink-0 rounded-full" style={{ background: row.kind === "lab" ? "var(--lab-accent)" : "var(--lab-green)" }} />
-                  {sidebarCollapsed ? row.label.slice(0, 1) : row.label}
-                  {!sidebarCollapsed && nodes.includes(row.kind) ? <span className="ml-auto text-[9px] text-[var(--lab-ink-3)]">画布</span> : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        {/* 底部：用户占位（左）+ 设置（右）+ 主题切换 */}
-        <div className="titlebar-no-drag shrink-0 border-t border-[var(--lab-border-soft)] p-2">
-          <div className={`mb-2 flex items-center ${sidebarCollapsed ? "flex-col gap-1.5" : "gap-1.5"}`}>
-            <button
-              type="button"
-              onClick={() => {
-                setProfileDraft(profile);
-                setProfileOpen(true);
-              }}
-              className={`flex min-w-0 items-center gap-2 rounded-[10px] text-left hover:bg-[var(--lab-hover)] ${
-                sidebarCollapsed ? "size-8 justify-center p-0" : "flex-1 px-1.5 py-1"
-              }`}
-              title="个性化（登录即将接入）"
-            >
-              <LineFaceAvatar seed={profile.avatarSeed} size={sidebarCollapsed ? 28 : 28} />
-              {!sidebarCollapsed ? (
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-medium text-[var(--lab-ink)]">
-                    {profile.displayName.trim() || "未登录"}
-                  </span>
-                  <span className="block truncate text-[10px] text-[var(--lab-ink-3)]">点击个性化</span>
-                </span>
-              ) : null}
-            </button>
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-              onClick={() => setSettingsOpen(true)}
-              title="设置 (⌘,)"
-              aria-label="设置"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
-          </div>
-
-          <button
-            type="button"
-            role="switch"
-            aria-checked={theme === "light"}
-            aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-            title={theme === "dark" ? "切到纯白" : "切到纯黑"}
-            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            className={`relative flex h-8 items-center rounded-full p-0.5 transition-colors ${
-              sidebarCollapsed ? "mx-auto w-8 justify-center overflow-hidden" : "w-full"
-            }`}
-            style={{ background: "var(--lab-hover)" }}
-          >
-            {!sidebarCollapsed ? (
-              <>
-                <span className="relative z-[1] flex h-7 w-1/2 items-center justify-center">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={theme === "light" ? "text-[var(--lab-ink)]" : "text-[var(--lab-ink-3)]"}>
-                    <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-                  </svg>
-                </span>
-                <span className="relative z-[1] flex h-7 w-1/2 items-center justify-center">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={theme === "dark" ? "text-[var(--lab-ink)]" : "text-[var(--lab-ink-3)]"}>
-                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                  </svg>
-                </span>
-                <span
-                  className="pointer-events-none absolute top-0.5 z-0 h-7 rounded-full bg-[var(--lab-surface-solid)] shadow-[0_1px_3px_rgba(0,0,0,0.18)] transition-[left] duration-200 ease-out"
-                  style={{
-                    width: "calc(50% - 2px)",
-                    left: theme === "light" ? 2 : "calc(50% + 0px)",
-                  }}
-                  aria-hidden
-                />
-              </>
-            ) : (
-              <span className="flex size-7 items-center justify-center rounded-full bg-[var(--lab-surface-solid)] text-[var(--lab-ink)] shadow-[0_1px_3px_rgba(0,0,0,0.18)]">
-                {theme === "dark" ? (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-                ) : (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
-                )}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {!sidebarCollapsed ? (
-          <div role="separator" aria-orientation="vertical" className="titlebar-no-drag absolute inset-y-0 right-0 w-1.5 cursor-col-resize" onMouseDown={startSidebarResize} />
-        ) : null}
-      </aside>
-
+      <Sidebar
+        skinOn={skinOn}
+        collapsed={sidebarCollapsed}
+        width={sidebarW}
+        labAppIcon={labAppIcon}
+        shellMode={shellMode}
+        onSupervisorToggle={pushSupervisorSoonNotice}
+        experiments={experiments}
+        activeExp={activeExp}
+        activeWorkspace={activeWorkspace}
+        isNormal={isNormal}
+        renaming={renaming}
+        recents={workdirRecents}
+        onNew={startNewChat}
+        onNewInWorkspace={startNewChatInWorkspace}
+        onPickWorkspace={() => void pickFolder("add-workspace")}
+        onRemoveWorkspace={removeWorkspace}
+        onRenameStart={(id) => setRenaming(id)}
+        onRenameCommit={(id, name) => renameExperiment(id, name)}
+        onRenameCancel={() => setRenaming(null)}
+        onSwitch={switchExperiment}
+        onDeleteAsk={(id) => setDeleteConfirm(id)}
+        onTogglePin={(id) => {
+          setExperiments((xs) =>
+            xs.map((e) => (e.id === id ? { ...e, pinned: !e.pinned } : e)),
+          );
+        }}
+        onToggleArchive={(id) => {
+          setExperiments((xs) =>
+            xs.map((e) =>
+              e.id === id
+                ? { ...e, archived: !e.archived, pinned: e.archived ? e.pinned : false }
+                : e,
+            ),
+          );
+        }}
+        onSelectWorkspace={selectWorkspace}
+        onOpenSkills={() => setSkillsOpen(true)}
+        onOpenSkillsMarket={() => setMarketOpen(true)}
+        onOpenAgents={() => setAgentsOpen(true)}
+        showAgentRows={!isNormal && Boolean(exp)}
+        lab={lab}
+        coding={coding}
+        nodes={nodes}
+        inspector={inspector}
+        onPickAgent={(kind) => {
+          setTarget(kind);
+          if (nodes.includes(kind)) setInspector(kind);
+        }}
+        profile={profile}
+        onOpenProfile={() => {
+          setProfileDraft(profile);
+          setProfileOpen(true);
+        }}
+        onOpenSettings={() => setSettingsOpen(true)}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        resizeHandle={
+          !sidebarCollapsed ? (
+            <div role="separator" aria-orientation="vertical" className="titlebar-no-drag absolute inset-y-0 right-0 w-1.5 cursor-col-resize" onMouseDown={startSidebarResize} />
+          ) : null
+        }
+      />
       {/* ============ Main ============ */}
       <main
         ref={mainColRef}
