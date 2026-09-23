@@ -1318,6 +1318,9 @@ export default function App() {
               );
             }}
             onSelectWorkspace={selectWorkspace}
+            onOpenSkills={() => setSkillsOpen(true)}
+            onOpenSkillsMarket={() => setMarketOpen(true)}
+            onOpenAgents={() => setAgentsOpen(true)}
           />
 
           {/* supervisor-only: current experiment agent rows */}
@@ -1375,33 +1378,6 @@ export default function App() {
                   <span className="block truncate text-[10px] text-[var(--lab-ink-3)]">点击个性化</span>
                 </span>
               ) : null}
-            </button>
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-              onClick={() => setSkillsOpen(true)}
-              title="技能管理"
-              aria-label="技能管理"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-              onClick={() => setMarketOpen(true)}
-              title="技能市场"
-              aria-label="技能市场"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 9l2.2-5.3A1 1 0 0 1 6.1 3h11.8a1 1 0 0 1 .9.7L21 9"/><path d="M9 13h6"/></svg>
-            </button>
-            <button
-              type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-              onClick={() => setAgentsOpen(true)}
-              title="智能体管理"
-              aria-label="智能体管理"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><circle cx="9" cy="13" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1" fill="currentColor" stroke="none"/><path d="M9 17h6"/></svg>
             </button>
             <button
               type="button"
