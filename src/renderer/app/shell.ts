@@ -6,8 +6,8 @@
  * profile/shell-mode loaders. Behaviour is intentionally identical — this is
  * a pure move so the shell can be shrunk without touching semantics.
  */
-import type { ShellMode } from "../../lib/sessionStores";
-import { FILE_SIDEBAR_DEFAULT_WIDTH } from "../../components/FileWorkspaceSidebar";
+import type { ShellMode } from "../lib/sessionStores";
+import { FILE_SIDEBAR_DEFAULT_WIDTH } from "../components/FileWorkspaceSidebar";
 
 export const SIDEBAR_KEY = "lab.sidebar.width";
 export const SIDEBAR_MIN = 220;

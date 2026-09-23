@@ -1,6 +1,6 @@
 import type { ChatMessage } from "@shared/protocol";
-import { SectionTokenMeter } from "../components/TokenUsageMeter";
-import { NewChatGlyph, SidebarToggleGlyph } from "./glyphs";
+import { SectionTokenMeter } from "../../components/TokenUsageMeter";
+import { NewChatGlyph, SidebarToggleGlyph } from "../glyphs";
 
 /**
  * Window chrome row: sidebar/new-chat buttons, breadcrumb and token meter.
