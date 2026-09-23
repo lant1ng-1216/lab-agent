@@ -40,7 +40,6 @@ export default function Sidebar({
   onToggleArchive,
   onSelectWorkspace,
   onOpenSkills,
-  onOpenSkillsMarket,
   onOpenAgents,
   showAgentRows,
   lab,
@@ -80,7 +79,6 @@ export default function Sidebar({
   onToggleArchive: (id: string) => void;
   onSelectWorkspace: (dir: string) => void;
   onOpenSkills: () => void;
-  onOpenSkillsMarket: () => void;
   onOpenAgents: () => void;
   showAgentRows: boolean;
   lab: AgentState;
@@ -141,7 +139,6 @@ export default function Sidebar({
           onToggleArchive={onToggleArchive}
           onSelectWorkspace={onSelectWorkspace}
           onOpenSkills={onOpenSkills}
-          onOpenSkillsMarket={onOpenSkillsMarket}
           onOpenAgents={onOpenAgents}
         />
 

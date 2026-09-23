@@ -1298,7 +1298,6 @@ export default function App() {
         }}
         onSelectWorkspace={selectWorkspace}
         onOpenSkills={() => setSkillsOpen(true)}
-        onOpenSkillsMarket={() => setMarketOpen(true)}
         onOpenAgents={() => setAgentsOpen(true)}
         showAgentRows={!isNormal && Boolean(exp)}
         lab={lab}
@@ -1831,6 +1830,10 @@ export default function App() {
           hasSession={Boolean(activeExp && (experiments.find((e) => e.id === activeExp)?.coding.messages.length ?? 0) > 0)}
           onClose={() => setSkillsOpen(false)}
           onDistill={distillToSkill}
+          onOpenMarket={() => {
+            setSkillsOpen(false);
+            setMarketOpen(true);
+          }}
           draft={skillDraft}
           onDiscardDraft={() => setSkillDraft(null)}
         />

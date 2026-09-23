@@ -11,7 +11,6 @@ import {
   MagnifyingGlass,
   Plus,
   Robot,
-  Storefront,
 } from "@phosphor-icons/react";
 import type { LoopStatus } from "@shared/protocol";
 import type { Experiment } from "../lib/sessionStores";
@@ -39,7 +38,6 @@ type Props = {
   onSelectWorkspace: (dir: string) => void;
   /** Secondary entries shown between 新对话 and 搜索. */
   onOpenSkills: () => void;
-  onOpenSkillsMarket: () => void;
   onOpenAgents: () => void;
 };
 
@@ -105,7 +103,6 @@ export default function SidebarSessionList({
   onToggleArchive,
   onSelectWorkspace,
   onOpenSkills,
-  onOpenSkillsMarket,
   onOpenAgents,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -378,17 +375,9 @@ export default function SidebarSessionList({
           type="button"
           onClick={onOpenSkills}
           className="flex size-8 items-center justify-center rounded-lg text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-          title="技能管理"
+          title="技能"
         >
           <Lightbulb size={16} {...I} />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSkillsMarket}
-          className="flex size-8 items-center justify-center rounded-lg text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
-          title="技能市场"
-        >
-          <Storefront size={16} {...I} />
         </button>
         <button
           type="button"
@@ -434,16 +423,6 @@ export default function SidebarSessionList({
             <Lightbulb size={15} {...I} />
           </span>
           技能
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSkillsMarket}
-          className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--lab-ink)] hover:bg-[var(--lab-hover)]"
-        >
-          <span className="flex size-4 items-center justify-center text-[var(--lab-ink-2)]">
-            <Storefront size={15} {...I} />
-          </span>
-          技能市场
         </button>
         <button
           type="button"
