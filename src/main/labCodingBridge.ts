@@ -201,6 +201,42 @@ function enginePathAugment(root: string, existing?: string): string {
   return prefix.length ? `${prefix.join(sep)}${sep}${base}` : base
 }
 
+/**
+ * The engine needs Git Bash on Windows, but Electron hands the child a bare
+ * PATH and Git is often installed outside the default location. Probe the
+ * usual install dirs plus PATH (both `...\Git\cmd` and `...\bin` layouts) and
+ * point the engine at the first bash.exe we find. An explicit
+ * CLAUDE_CODE_GIT_BASH_PATH from the environment always wins.
+ */
+function resolveGitBashPath(): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  const candidates: string[] = []
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files'
+  const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+  const localAppData = process.env.LOCALAPPDATA
+  candidates.push(
+    path.join(programFiles, 'Git', 'bin', 'bash.exe'),
+    path.join(programFilesX86, 'Git', 'bin', 'bash.exe'),
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+  )
+  if (localAppData) candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
+  for (const entry of (process.env.PATH || '').split(path.delimiter)) {
+    const dir = entry.replace(/[\\/]+$/, '')
+    if (!dir) continue
+    // Git's PATH entry varies (`...\Git\cmd`, `...\Git\mingw64\bin`, `...\Git\usr\bin`),
+    // but bash always sits in `<gitRoot>\bin`. Walk up a few levels and prefer that.
+    let cur = dir
+    for (let i = 0; i < 3 && cur; i += 1) {
+      candidates.push(path.join(cur, 'bin', 'bash.exe'))
+      const parent = path.dirname(cur)
+      if (parent === cur) break
+      cur = parent
+    }
+    candidates.push(path.join(dir, 'bash.exe'))
+  }
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate))
+}
+
 function buildEnv(
   root: string,
   configDir: string,
@@ -223,6 +259,10 @@ function buildEnv(
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || fromFile.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || '1',
   }, configDir) as NodeJS.ProcessEnv
   merged.PATH = enginePathAugment(root, merged.PATH)
+  if (process.platform === 'win32' && !merged.CLAUDE_CODE_GIT_BASH_PATH) {
+    const gitBash = resolveGitBashPath()
+    if (gitBash) merged.CLAUDE_CODE_GIT_BASH_PATH = gitBash
+  }
   const key =
     merged.DEEPSEEK_API_KEY ||
     merged.API_KEY ||
