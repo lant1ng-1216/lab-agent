@@ -43,6 +43,15 @@ function relToWorkdir(workdir: string | null, abs: string) {
   return abs;
 }
 
+/**
+ * The engine reports absolute Windows paths with `\`, while the tree builds
+ * child paths with `/`. Normalise both sides so activity/touched lookups match.
+ * No-op on macOS/Linux.
+ */
+function normPath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
 /** Live per-file activity derived from the current turn's tool traces. */
 type FileActivity = {
   status: "created" | "modified" | "read";
@@ -63,8 +72,9 @@ function collectFileActivity(tools: AgentToolTrace[]): Map<string, FileActivity>
     const isRead = name.includes("read") || name.includes("view") || name.includes("glob") || name.includes("grep");
     if (!isWrite && !isEdit && !isRead) continue;
     const next: FileActivity["status"] = isWrite ? "created" : isEdit ? "modified" : "read";
-    const prev = map.get(t.file);
-    map.set(t.file, {
+    const key = normPath(t.file);
+    const prev = map.get(key);
+    map.set(key, {
       // Keep the strongest thing the agent did to this file this turn.
       status: prev && ACTIVITY_RANK[prev.status] > ACTIVITY_RANK[next] ? prev.status : next,
       add: (prev?.add ?? 0) + (t.add ?? 0),
@@ -75,8 +85,7 @@ function collectFileActivity(tools: AgentToolTrace[]): Map<string, FileActivity>
   return map;
 }
 
-function activityLabel(act: FileActivity): string {
-  if (act.status === "read") return "读";
+function activityLabel(act: FileActivity): string {  if (act.status === "read") return "读";
   if (act.status === "created") return "新";
   const parts: string[] = [];
   if (act.add) parts.push(`+${act.add}`);
@@ -93,8 +102,8 @@ function activityTone(act: FileActivity): string {
 
 /** Directories from `root` down to (and including) the parent of `abs`. */
 function ancestorDirs(root: string, abs: string): string[] {
-  const r = root.replace(/\\/g, "/").replace(/\/$/, "");
-  const a = abs.replace(/\\/g, "/");
+  const r = normPath(root);
+  const a = normPath(abs);
   if (a !== r && !a.startsWith(r + "/")) return [];
   const parts = a.slice(r.length).split("/").filter(Boolean);
   parts.pop();
@@ -276,7 +285,6 @@ function WorkspaceTree({
     const el = treeRef.current?.querySelector<HTMLElement>(`[data-file="${CSS.escape(firstTouched)}"]`);
     el?.scrollIntoView({ block: "nearest" });
   }, [follow, firstTouched, children, expanded]);
-
   const renderDir = (dir: string, depth: number) => {
     const list = children[dir] ?? [];
     return list.map((f) => {
@@ -284,13 +292,13 @@ function WorkspaceTree({
       const isDir = f.type === "dir";
       const isOpen = expanded.has(abs);
       const active = !isDir && (selected === abs || selected?.endsWith("/" + f.name));
-      const act = !isDir ? activity.get(abs) : undefined;
+      const act = !isDir ? activity.get(normPath(abs)) : undefined;
       return (
         <div key={abs}>
           <button
             type="button"
             title={abs}
-            data-file={!isDir ? abs : undefined}
+            data-file={!isDir ? normPath(abs) : undefined}
             onClick={() => (isDir ? void toggle(abs) : onOpen(abs))}
             className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[12px] ${
               active
@@ -491,14 +499,14 @@ export default function FileWorkspaceSidebar({
 
   const openAbs = useCallback(
     async (absPath: string, fromTool?: AgentToolTrace) => {
+      const target = normPath(absPath);
       const hit =
         fromTool ||
-        tools.find(
-          (t) =>
-            t.file === absPath ||
-            t.file?.endsWith(absPath) ||
-            absPath.endsWith(t.file || ""),
-        );
+        tools.find((t) => {
+          if (!t.file) return false;
+          const tf = normPath(t.file);
+          return tf === target || tf.endsWith(target) || target.endsWith(tf);
+        });
 
       const lines =
         hit?.detailLines?.length && (hit.add !== undefined || hit.del !== undefined)
