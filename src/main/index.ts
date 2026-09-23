@@ -20,6 +20,9 @@ import { SupervisorLoop } from '../agent/loops/supervisor-loop';
 import { CodingLoop } from '../agent/loops/coding-loop';
 import { LabCodingBridge } from './labCodingBridge';
 import { labAgentRuntimeEnv } from '../shared/labAgentRuntime';
+import { createSkillsService } from './skillsService';
+import { createAgentsService } from './agentsService';
+import { createSkillsMarketService } from './skillsMarketService';
 
 // node-pty is CJS; load lazily so a missing native build doesn't crash the app
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -736,6 +739,38 @@ function registerIpc() {
   });
 
   ipcMain.handle(IPC.MIRROR_SNAPSHOT, () => store.getMirrorSnapshot());
+
+  // ---- Skills management ----
+  const skillsService = createSkillsService({
+    getWorkspacePath: () => settings.workspacePath,
+    getGlobalSkillsRoot: () => path.join(resolveLabAgentConfigDir(), 'skills'),
+  });
+  ipcMain.handle(IPC.SKILLS_LIST, () => skillsService.list());
+  ipcMain.handle(IPC.SKILLS_READ, (_e, req) => skillsService.read(req));
+  ipcMain.handle(IPC.SKILLS_WRITE, (_e, req) => skillsService.write(req));
+  ipcMain.handle(IPC.SKILLS_DELETE, (_e, req) => skillsService.remove(req));
+  ipcMain.handle(IPC.SKILLS_REVEAL, (_e, req) => skillsService.reveal(req));
+
+  // ---- Skills community marketplace ----
+  const skillsMarketService = createSkillsMarketService({
+    getWorkspacePath: () => settings.workspacePath,
+    getGlobalSkillsRoot: () => path.join(resolveLabAgentConfigDir(), 'skills'),
+  });
+  ipcMain.handle(IPC.SKILLS_MARKET_LIST, () => skillsMarketService.list());
+  ipcMain.handle(IPC.SKILLS_MARKET_DESCRIBE, (_e, ids: string[]) => skillsMarketService.describe(ids ?? []));
+  ipcMain.handle(IPC.SKILLS_MARKET_PREVIEW, (_e, req) => skillsMarketService.preview(req));
+  ipcMain.handle(IPC.SKILLS_MARKET_INSTALL, (_e, req) => skillsMarketService.install(req));
+
+  // ---- Custom agents management ----
+  const agentsService = createAgentsService({
+    getWorkspacePath: () => settings.workspacePath,
+    getGlobalAgentsRoot: () => path.join(resolveLabAgentConfigDir(), 'agents'),
+  });
+  ipcMain.handle(IPC.AGENTS_LIST, () => agentsService.list());
+  ipcMain.handle(IPC.AGENTS_READ, (_e, req) => agentsService.read(req));
+  ipcMain.handle(IPC.AGENTS_WRITE, (_e, req) => agentsService.write(req));
+  ipcMain.handle(IPC.AGENTS_DELETE, (_e, req) => agentsService.remove(req));
+  ipcMain.handle(IPC.AGENTS_REVEAL, (_e, req) => agentsService.reveal(req));
 
   ipcMain.on(IPC.SUPERVISOR_COMMAND, (_e, cmd: SupervisorCommand) => {
     void codingLoop.handleCommand(cmd);

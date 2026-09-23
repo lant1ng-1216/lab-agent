@@ -62,16 +62,26 @@ type FileActivity = {
 
 const ACTIVITY_RANK = { read: 1, modified: 2, created: 3 } as const;
 
+/**
+ * Classify a file tool by what it does to the file it reports: `write`
+ * creates, `edit` modifies, `null` means read-only (or not a file tool).
+ */
+function toolWriteKind(name: string | undefined): "write" | "edit" | null {
+  const n = (name || "").toLowerCase();
+  if (n.includes("write") || n.includes("createfile")) return "write";
+  if (n.includes("edit") || n.includes("replace")) return "edit";
+  return null;
+}
+
 function collectFileActivity(tools: AgentToolTrace[]): Map<string, FileActivity> {
   const map = new Map<string, FileActivity>();
   for (const t of tools) {
     if (!t.file) continue;
     const name = (t.name || "").toLowerCase();
-    const isWrite = name.includes("write") || name.includes("createfile");
-    const isEdit = name.includes("edit") || name.includes("replace");
+    const write = toolWriteKind(t.name);
     const isRead = name.includes("read") || name.includes("view") || name.includes("glob") || name.includes("grep");
-    if (!isWrite && !isEdit && !isRead) continue;
-    const next: FileActivity["status"] = isWrite ? "created" : isEdit ? "modified" : "read";
+    if (!write && !isRead) continue;
+    const next: FileActivity["status"] = write === "write" ? "created" : write === "edit" ? "modified" : "read";
     const key = normPath(t.file);
     const prev = map.get(key);
     map.set(key, {
@@ -117,6 +127,13 @@ function ancestorDirs(root: string, abs: string): string[] {
 }
 
 const FOLLOW_KEY = "lab.fileFollow";
+
+/**
+ * Collapse a burst of agent writes into a single preview open — long enough to
+ * skip over the intermediate files of a multi-file edit, short enough to feel
+ * live.
+ */
+const FOLLOW_PREVIEW_DELAY_MS = 180;
 
 function loadFollow(): boolean {
   try {
@@ -468,6 +485,20 @@ export default function FileWorkspaceSidebar({
 
   const fileActivity = useMemo(() => collectFileActivity(tools), [tools]);
 
+  /**
+   * Newest *finished* write/edit this turn — what「跟随」should surface in the
+   * preview. Returns null while that newest write is still running, so we only
+   * ever read a file the agent has stopped touching (no half-written content).
+   */
+  const lastWritten = useMemo(() => {
+    for (let i = tools.length - 1; i >= 0; i -= 1) {
+      const t = tools[i];
+      if (!t.file || !toolWriteKind(t.name)) continue;
+      return t.state === "running" ? null : t;
+    }
+    return null;
+  }, [tools]);
+
   const activeFileName = useMemo(() => {
     for (const t of [...tools].reverse()) {
       if (t.file && t.state === "running") return fileName(t.file);
@@ -498,15 +529,23 @@ export default function FileWorkspaceSidebar({
   }, [turnFiles, recents]);
 
   const openAbs = useCallback(
-    async (absPath: string, fromTool?: AgentToolTrace) => {
+    async (
+      absPath: string,
+      fromTool?: AgentToolTrace,
+      opts?: { record?: boolean; origin?: "user" | "agent" },
+    ) => {
       const target = normPath(absPath);
+      const matches = (t: AgentToolTrace) => {
+        if (!t.file) return false;
+        const tf = normPath(t.file);
+        return tf === target || tf.endsWith(target) || target.endsWith(tf);
+      };
+      // Prefer the tool that actually wrote the file — it is the one carrying
+      // this turn's diff, whereas a Read/Glob of the same path carries none.
       const hit =
         fromTool ||
-        tools.find((t) => {
-          if (!t.file) return false;
-          const tf = normPath(t.file);
-          return tf === target || tf.endsWith(target) || target.endsWith(tf);
-        });
+        tools.find((t) => matches(t) && toolWriteKind(t.name)) ||
+        tools.find(matches);
 
       const lines =
         hit?.detailLines?.length && (hit.add !== undefined || hit.del !== undefined)
@@ -535,15 +574,54 @@ export default function FileWorkspaceSidebar({
         error: content === undefined ? error : undefined,
         lines,
         preferredTab: lines?.length ? "diff" : "file",
+        origin: opts?.origin ?? "user",
       });
       onExpand();
 
-      if (sessionKey) {
+      if (sessionKey && opts?.record !== false) {
         setRecents(pushFileRecent(sessionKey, hit?.file || absPath));
       }
     },
     [onExpand, onPreview, sessionKey, tools],
   );
+
+  /**
+   * Follow the agent's edits into the preview pane: when the agent finishes
+   * writing or editing a file, switch the preview to it so the change is
+   * visible without a click.
+   *
+   * Deliberately conservative — it only runs while the panel is already open
+   * (never force-expands the panel), and the short delay collapses a burst of
+   * writes into a single open of the newest file.
+   */
+  const openAbsRef = useRef(openAbs);
+  useEffect(() => {
+    openAbsRef.current = openAbs;
+  }, [openAbs]);
+
+  // Keep the newest write tool behind a ref so the effect below can depend on
+  // plain strings while still handing openAbs the exact tool that wrote the file.
+  const lastWrittenRef = useRef(lastWritten);
+  useEffect(() => {
+    lastWrittenRef.current = lastWritten;
+  }, [lastWritten]);
+
+  const followedRef = useRef<string | null>(null);
+  const lastWrittenId = lastWritten?.id ?? null;
+  const lastWrittenFile = lastWritten?.file ?? null;
+  useEffect(() => {
+    if (!follow || !open || !lastWrittenId || !lastWrittenFile) return;
+    if (followedRef.current === lastWrittenId) return;
+    const timer = window.setTimeout(() => {
+      followedRef.current = lastWrittenId;
+      const tool = lastWrittenRef.current;
+      void openAbsRef.current(lastWrittenFile, tool?.id === lastWrittenId ? tool : undefined, {
+        record: false,
+        origin: "agent",
+      });
+    }, FOLLOW_PREVIEW_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [follow, open, lastWrittenId, lastWrittenFile]);
 
   const hasDiff = Boolean(preview?.lines?.length);
   const hasFile = preview != null && (preview.content != null || preview.error);
@@ -633,7 +711,11 @@ export default function FileWorkspaceSidebar({
           role="switch"
           aria-checked={follow}
           aria-label={follow ? "关闭跟随 agent" : "开启跟随 agent"}
-          title={follow ? "跟随 agent：开 · 自动定位到本轮改动的文件" : "跟随 agent：关"}
+          title={
+            follow
+              ? "跟随 agent：开 · 改动文件时自动定位并预览（面板折叠时不跟随）"
+              : "跟随 agent：关 · 不自动定位或预览"
+          }
           onClick={() => setFollow((v) => !v)}
           className={`flex size-6 shrink-0 items-center justify-center rounded-md border text-[11px] ${
             follow
@@ -703,6 +785,14 @@ export default function FileWorkspaceSidebar({
         <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--lab-ink)]" title={preview?.path}>
           {preview ? fileName(preview.path) : "预览"}
         </div>
+        {preview?.origin === "agent" ? (
+          <span
+            className="shrink-0 rounded border border-[var(--lab-accent)]/40 bg-[var(--lab-accent)]/10 px-1.5 py-px text-[9.5px] leading-none text-[var(--lab-accent)]"
+            title="由跟随 agent 自动打开"
+          >
+            跟随
+          </span>
+        ) : null}
         {preview && hasFile && hasDiff ? (
           <div className="flex rounded-md border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] p-0.5 text-[11px]">
             <button

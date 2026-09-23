@@ -13,7 +13,7 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { AgentPermissionPrompt, AgentToolTrace, AgentWorkSegment, ChatMessage, CodingMirrorEvent, LoopStatus, SupervisorCommand } from "@shared/protocol";
+import type { AgentPermissionPrompt, AgentToolTrace, AgentWorkSegment, ChatMessage, CodingMirrorEvent, LoopStatus, SubagentTrace, SupervisorCommand } from "@shared/protocol";
 import LabNode, { type LabFlowNode, type LabNodeKind } from "./LabNode";
 import TermNode, { type TermFlowNode } from "./TermNode";
 
@@ -35,6 +35,8 @@ export interface AgentState {
   engine?: string;
   /** Real tool traces for Thinking / ToolChips (normal-mode bridge) */
   tools?: AgentToolTrace[];
+  /** Live sub-agents (Agent/Task tool) shown in the sub-agent drawer. */
+  subagents?: SubagentTrace[];
   statusLabel?: string;
   /** Pending tool permission from Lab Coding stdio control_request */
   permission?: AgentPermissionPrompt | null;

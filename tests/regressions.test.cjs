@@ -45,6 +45,10 @@ const {
   reportedTurnTokens,
   resolveModelContextLimit,
 } = require(path.join(distDir, "shared/modelContext.js"));
+const {
+  isSubagentTool,
+  mergeSubagentTraces,
+} = require(path.join(distDir, "shared/subagents.js"));
 
 const minute = 60_000;
 
@@ -267,8 +271,12 @@ test("known DeepSeek legacy aliases resolve to current model IDs", () => {
 });
 
 test("engine resolution requires the executable and falls back to the platform bundle", () => {
-  const roots = ["/repo/agents/lab-coding", "/repo/packaging/engine/darwin-arm64"];
-  const selected = findEngineRoot(roots, "darwin", (file) => file.endsWith("/packaging/engine/darwin-arm64/cli-dev"));
+  // Build the fixture with the host separator: findEngineRoot joins candidates
+  // via path.join, so posix-only literals can never match on Windows.
+  const workspace = path.join(path.sep, "repo", "agents", "lab-coding");
+  const bundle = path.join(path.sep, "repo", "packaging", "engine", "darwin-arm64");
+  const roots = [workspace, bundle];
+  const selected = findEngineRoot(roots, "darwin", (file) => file === path.join(bundle, "cli-dev"));
   assert.equal(selected, roots[1]);
   assert.equal(findEngineRoot(roots, "darwin", () => false), roots[0]);
 });
@@ -429,4 +437,47 @@ test("agentic task totals do not masquerade as a single-request context peak", (
   assert.equal(reportedTurnTokens(totals), 462_300);
   assert.equal(Math.round((contextTokensUsed(peak) / 1_000_000) * 100), 2);
   assert.equal(Math.round((totals.totalInputTokens / 1_000_000) * 100), 46);
+});
+
+test("sub-agent tools are recognised across the Agent/Task aliases", () => {
+  assert.equal(isSubagentTool("Agent"), true);
+  assert.equal(isSubagentTool("Task"), true);
+  assert.equal(isSubagentTool("agent"), true);
+  assert.equal(isSubagentTool("TaskTool"), false);
+  assert.equal(isSubagentTool("Read"), false);
+  assert.equal(isSubagentTool(""), false);
+});
+
+test("sub-agent traces merge engine task events with tool-row fallback", () => {
+  const tool = (over) => ({ id: "t1", name: "Agent", summary: "explore repo", state: "running", ts: 100, ...over });
+
+  // Engine task events win; the matching Agent tool row is not duplicated.
+  const fromEvents = [
+    { id: "task-1", toolUseId: "t1", description: "explore repo", status: "running", ts: 100 },
+  ];
+  const mergedWithTool = mergeSubagentTraces([tool({})], fromEvents);
+  assert.equal(mergedWithTool.length, 1);
+  assert.equal(mergedWithTool[0].id, "task-1");
+
+  // No task events (older engine) → fall back to the Agent tool row.
+  const fallback = mergeSubagentTraces([tool({})], []);
+  assert.equal(fallback.length, 1);
+  assert.equal(fallback[0].id, "t1");
+  assert.equal(fallback[0].status, "running");
+  assert.equal(fallback[0].description, "explore repo");
+
+  // Non-sub-agent tools never appear.
+  const onlyRead = mergeSubagentTraces([tool({ name: "Read" })], []);
+  assert.equal(onlyRead.length, 0);
+});
+
+test("running sub-agents sort before finished ones", () => {
+  const list = mergeSubagentTraces(
+    [],
+    [
+      { id: "done", description: "finished", status: "completed", ts: 999 },
+      { id: "run", description: "running", status: "running", ts: 1 },
+    ],
+  );
+  assert.deepEqual(list.map((s) => s.id), ["run", "done"]);
 });

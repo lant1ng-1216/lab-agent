@@ -42,6 +42,19 @@ export type BridgeEvent =
       detailLines?: { text: string; tone?: 'add' | 'del' | 'ctx' }[]
     }
   | {
+      kind: 'subagent'
+      id: string
+      toolUseId?: string
+      description: string
+      taskType?: string
+      status: 'running' | 'completed' | 'failed' | 'stopped'
+      lastToolName?: string
+      summary?: string
+      toolUses?: number
+      totalTokens?: number
+      durationMs?: number
+    }
+  | {
       kind: 'permission'
       requestId: string
       toolName: string
@@ -143,6 +156,8 @@ type SessionState = {
   turnBusy: boolean
   turnStartedAt: number
   tools: Map<string, Extract<BridgeEvent, { kind: 'tool' }>>
+  /** Live sub-agents (Agent/Task tool), keyed by engine task id. */
+  subagents: Map<string, Extract<BridgeEvent, { kind: 'subagent' }>>
   toolStartedAt: Map<string, number>
   pendingPermInput: Map<string, Record<string, unknown>>
   lastActivityAt: number
@@ -556,6 +571,7 @@ function extractThinkingText(message: unknown): string {
 function emptyState(): SessionState {
   return {
     tools: new Map(),
+    subagents: new Map(),
     pendingPermInput: new Map(),
     lastActivityAt: Date.now(),
     lastHeartbeatEmittedAt: 0,
@@ -1156,6 +1172,51 @@ export class LabCodingBridge {
         })
         return
       }
+      if (subtype === 'task_started' || subtype === 'task_progress' || subtype === 'task_notification') {
+        const taskId = typeof obj.task_id === 'string' ? obj.task_id : ''
+        if (!taskId) return
+        const usage = obj.usage && typeof obj.usage === 'object' ? (obj.usage as Record<string, unknown>) : {}
+        const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+        const terminal =
+          subtype === 'task_notification'
+            ? ((obj.status === 'failed' || obj.status === 'stopped' ? obj.status : 'completed') as
+                | 'completed'
+                | 'failed'
+                | 'stopped')
+            : 'running'
+        const prev = s.subagents.get(taskId)
+        const next: Extract<BridgeEvent, { kind: 'subagent' }> = {
+          kind: 'subagent',
+          id: taskId,
+          toolUseId:
+            (typeof obj.tool_use_id === 'string' ? obj.tool_use_id : undefined) || prev?.toolUseId,
+          description:
+            sanitizeDesktopDiagnostic(
+              (typeof obj.description === 'string' && obj.description) || prev?.description || '子 agent',
+              '',
+              160,
+            ) || '子 agent',
+          taskType: (typeof obj.task_type === 'string' ? obj.task_type : undefined) || prev?.taskType,
+          status: terminal,
+          lastToolName:
+            (typeof obj.last_tool_name === 'string' ? obj.last_tool_name : undefined) || prev?.lastToolName,
+          summary:
+            typeof obj.summary === 'string' && obj.summary
+              ? sanitizeDesktopDiagnostic(obj.summary, os.homedir(), 300)
+              : prev?.summary,
+          toolUses: num(usage.tool_uses) ?? prev?.toolUses,
+          totalTokens: num(usage.total_tokens) ?? prev?.totalTokens,
+          durationMs: num(usage.duration_ms) ?? prev?.durationMs,
+        }
+        if (terminal === 'running') {
+          s.subagents.set(taskId, next)
+        } else {
+          // Terminal: emit once, then drop so a late progress ping can't revive it.
+          s.subagents.delete(taskId)
+        }
+        this.emit(sessionKey, next)
+        return
+      }
       if (subtype === 'init' || (obj.model && !subtype)) {
         this.emit(sessionKey, {
           kind: 'status',
@@ -1194,8 +1255,7 @@ export class LabCodingBridge {
             `shell-start session=${sanitizeDesktopDiagnostic(sessionKey, os.homedir(), 100)} tool=${sanitizeDesktopDiagnostic(tool.name, '', 80)} cwd=${sanitizeDesktopDiagnostic(s.cwd || '', os.homedir(), 240)} command=${sanitizeDesktopDiagnostic(tool.summary, os.homedir(), 360)}`,
           )
         }
-        this.emit(sessionKey, tool)
-      }
+        this.emit(sessionKey, tool)      }
       const thinking = extractThinkingText(message)
       if (thinking && !s.turnHadThinkingPartials) {
         s.thinkingAccum += (s.thinkingAccum ? '\n' : '') + thinking

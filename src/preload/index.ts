@@ -1,5 +1,34 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type AgentBridgeEvent, type AgentPromptRequest, type ChatMessage, type CodingMirrorEvent, type ListModelsRequest, type ListModelsResult, type LoopStatus, type SupervisorCommand } from '../shared/protocol';
+import {
+  IPC,
+  type AgentBridgeEvent,
+  type AgentPromptRequest,
+  type ChatMessage,
+  type CodingMirrorEvent,
+  type ListModelsRequest,
+  type ListModelsResult,
+  type LoopStatus,
+  type SkillDeleteRequest,
+  type SkillReadRequest,
+  type SkillReadResult,
+  type SkillRevealRequest,
+  type SkillWriteRequest,
+  type SkillWriteResult,
+  type SkillsListResult,
+  type AgentDeleteRequest,
+  type AgentReadRequest,
+  type AgentReadResult,
+  type AgentRevealRequest,
+  type AgentWriteRequest,
+  type AgentWriteResult,
+  type AgentsListResult,
+  type SupervisorCommand,
+  type MarketListResult,
+  type MarketPreviewRequest,
+  type MarketPreviewResult,
+  type MarketInstallRequest,
+  type MarketInstallResult,
+} from '../shared/protocol';
 
 export type AgentChannel = 'supervisor' | 'coding';
 
@@ -79,6 +108,34 @@ contextBridge.exposeInMainWorld('lab', {
     ipcRenderer.invoke(IPC.PICK_FILES, opts) as Promise<string[]>,
   listFiles: (dir: string) => ipcRenderer.invoke(IPC.LIST_FILES, dir) as Promise<{ name: string; type: string; size: number }[]>,
   readFile: (path: string) => ipcRenderer.invoke(IPC.READ_FILE, path) as Promise<{ ok: boolean; content?: string; error?: string }>,
+  skillsList: () => ipcRenderer.invoke(IPC.SKILLS_LIST) as Promise<SkillsListResult>,
+  skillsRead: (payload: SkillReadRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_READ, payload) as Promise<SkillReadResult>,
+  skillsWrite: (payload: SkillWriteRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_WRITE, payload) as Promise<SkillWriteResult>,
+  skillsDelete: (payload: SkillDeleteRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_DELETE, payload) as Promise<{ ok: boolean; error?: string }>,
+  skillsReveal: (payload: SkillRevealRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_REVEAL, payload) as Promise<{ ok: boolean; error?: string }>,
+  skillsMarketList: () => ipcRenderer.invoke(IPC.SKILLS_MARKET_LIST) as Promise<MarketListResult>,
+  skillsMarketDescribe: (ids: string[]) =>
+    ipcRenderer.invoke(IPC.SKILLS_MARKET_DESCRIBE, ids) as Promise<{
+      ok: boolean;
+      metas: { id: string; description: string; declaredName: string }[];
+    }>,
+  skillsMarketPreview: (payload: MarketPreviewRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_MARKET_PREVIEW, payload) as Promise<MarketPreviewResult>,
+  skillsMarketInstall: (payload: MarketInstallRequest) =>
+    ipcRenderer.invoke(IPC.SKILLS_MARKET_INSTALL, payload) as Promise<MarketInstallResult>,
+  agentsList: () => ipcRenderer.invoke(IPC.AGENTS_LIST) as Promise<AgentsListResult>,
+  agentsRead: (payload: AgentReadRequest) =>
+    ipcRenderer.invoke(IPC.AGENTS_READ, payload) as Promise<AgentReadResult>,
+  agentsWrite: (payload: AgentWriteRequest) =>
+    ipcRenderer.invoke(IPC.AGENTS_WRITE, payload) as Promise<AgentWriteResult>,
+  agentsDelete: (payload: AgentDeleteRequest) =>
+    ipcRenderer.invoke(IPC.AGENTS_DELETE, payload) as Promise<{ ok: boolean; error?: string }>,
+  agentsReveal: (payload: AgentRevealRequest) =>
+    ipcRenderer.invoke(IPC.AGENTS_REVEAL, payload) as Promise<{ ok: boolean; error?: string }>,
   onPtyData: (cb: (id: string, data: string) => void) => {
     const listener = (_: Electron.IpcRendererEvent, payload: { id: string; data: string }) => cb(payload.id, payload.data);
     ipcRenderer.on(IPC.PTY_DATA, listener);

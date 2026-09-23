@@ -6,4 +6,5 @@ export const DESKTOP_AGENT_GUIDANCE = [
   "For a public GitHub repository, prefer available metadata/tree/content APIs for initial inspection; clone only when a local checkout or execution is needed.",
   "Keep authentication checks separate from fetches. Do not combine auth probes, clone, and output-truncation pipelines in one shell command.",
   "Do not pipe long-running network commands through head or tail because that hides progress. If cloning is needed, verify the destination does not already exist, run the clone as a separate visible step, use supported connection/low-speed timeouts, and report its exit status and actual error output before deciding what to do next.",
+  "Never create or modify skill files (SKILL.md or anything under a skills directory) on your own initiative; self-distillation is forbidden. Only draft skill content when the user explicitly asks to organize something into a skill, and even then output the draft as a fenced code block for review instead of writing files — the desktop app saves it only after the user confirms.",
 ].join(" ");

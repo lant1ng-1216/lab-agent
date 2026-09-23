@@ -10,10 +10,14 @@ import type { FilePreviewPayload } from "./FileInspectSidebar";
 import BloubAvatar, { type BloubMood, type BloubMotion } from "../mascot/bloub/BloubAvatar";
 import { UserBubble } from "@harness";
 import { toolsToThinkingRows } from "../lib/agentTurn";
+import SubagentDrawer, { loadSubagentPin } from "./SubagentDrawer";
+import { mergeSubagentTraces } from "@shared/subagents";
 import { TurnTokenFooter } from "./TokenUsageMeter";
 import AppearancePickCards from "./AppearancePickCards";
 import type { AppearanceState } from "../lib/appearance";
 import { avatarMotionForTurn, isAgentTurnWorking } from "@shared/agentPresentation";
+import PermissionModal, { type PermissionAction } from "./PermissionModal";
+import { extractSkillDraft } from "./SkillsPanel";
 import {
   CHAT_FOLLOW_RESUME_DELAY_MS,
   isIntentionalChatBrowse,
@@ -53,6 +57,18 @@ type Props = {
   onResendFromUser?: (userId: string, text: string) => void;
   /** Drop this user message and everything after, restoring its text to the composer. */
   onWithdrawUser?: (userId: string, text: string) => void;
+  /** Offer to save an assistant-produced SKILL.md draft via the Skills panel. */
+  onSaveAsSkill?: (content: string) => void;
+  onPermissionAction?: (action: PermissionAction) => void;
+  /**
+   * When true the sub-agent panel is a real split pane owned by the shell
+   * (App), so it reserves its own column instead of floating over the chat.
+   */
+  subagentPane?: boolean;
+  subagentOpen?: boolean;
+  subagentPinned?: boolean;
+  onSubagentOpenChange?: (open: boolean) => void;
+  onSubagentPinChange?: (pinned: boolean) => void;
 };
 
 function looksLikePlan(text: string): boolean {
@@ -599,14 +615,17 @@ function AssistantMessageBody({
   onFileOpen,
   onQuoteSelection,
   showAvatar = false,
+  onSaveAsSkill,
 }: {
   msg: ChatMessage;
   onFileOpen?: (file: string, tools?: AgentToolTrace[]) => void;
   onQuoteSelection?: (text: string) => void;
   showAvatar?: boolean;
+  onSaveAsSkill?: (content: string) => void;
 }) {
   const thinking = msg.thinking?.trim();
   const open = (file: string) => onFileOpen?.(file, msg.tools);
+  const skillDraft = onSaveAsSkill ? extractSkillDraft(msg.content) : null;
   const timeline = msg.timeline?.length ? msg.timeline : null;
   return (
     <AssistantShell mood={msg.error ? "error" : "idle"} showAvatar={showAvatar}>
@@ -646,6 +665,18 @@ function AssistantMessageBody({
         </>
       )}
       <TurnTokenFooter usage={msg.usage} />
+      {skillDraft ? (
+        <div className="mt-2 flex items-center gap-2 rounded-xl border border-[var(--lab-border)] bg-[var(--lab-hover)]/40 px-3 py-2">
+          <span className="text-[11.5px] text-[var(--lab-ink-2)]">检测到技能草稿 · 保存前需你确认</span>
+          <button
+            type="button"
+            className="ml-auto rounded-lg bg-[var(--lab-accent)] px-3 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+            onClick={() => onSaveAsSkill?.(skillDraft)}
+          >
+            存为技能…
+          </button>
+        </div>
+      ) : null}
     </AssistantShell>
   );
 }
@@ -769,6 +800,13 @@ export default function NormalChatView({
   onQuoteSelection,
   onResendFromUser,
   onWithdrawUser,
+  onSaveAsSkill,
+  onPermissionAction,
+  subagentPane = false,
+  subagentOpen = false,
+  subagentPinned = false,
+  onSubagentOpenChange,
+  onSubagentPinChange,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
@@ -779,6 +817,42 @@ export default function NormalChatView({
   const shouldAutoScroll = useRef(true);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const tools = state.tools ?? [];
+  const subagents = useMemo(
+    () => mergeSubagentTraces(tools, state.subagents ?? []),
+    [tools, state.subagents],
+  );
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerPinned, setDrawerPinned] = useState(loadSubagentPin);
+  const drawerOpenState = subagentPane ? subagentOpen : drawerOpen;
+  const setDrawerOpenState = subagentPane ? onSubagentOpenChange! : setDrawerOpen;
+  const pinnedState = subagentPane ? subagentPinned : drawerPinned;
+  const setPinnedState = subagentPane ? onSubagentPinChange! : setDrawerPinned;
+  const runningSubagents = subagents.filter((s) => s.status === "running").length;
+
+  // Auto-open when a sub-agent starts; auto-collapse once all are terminal
+  // (unless the user pinned the panel open).
+  const hadRunningRef = useRef(false);
+  useEffect(() => {
+    if (runningSubagents > 0) {
+      hadRunningRef.current = true;
+      setDrawerOpenState(true);
+    } else if (hadRunningRef.current && !pinnedState) {
+      hadRunningRef.current = false;
+      setDrawerOpenState(false);
+    }
+  }, [runningSubagents, pinnedState, setDrawerOpenState]);
+
+  // Esc fully closes the sub-agent panel (it collapses to a slim rail, and
+  // disappears entirely once the turn's sub-agents clear).
+  useEffect(() => {
+    if (!drawerOpenState) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrawerOpenState(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpenState, setDrawerOpenState]);
+
   const thinkingText = state.thinkingText?.trim() ?? "";
   const archivedOnStream = state.streaming?.thinking?.trim() ?? "";
   const liveThinking = thinkingText || archivedOnStream;
@@ -1103,6 +1177,7 @@ export default function NormalChatView({
                 onFileOpen={openFile}
                 onQuoteSelection={onQuoteSelection}
                 showAvatar={!liveTurn && msg.id === lastAssistantId}
+                onSaveAsSkill={onSaveAsSkill}
               />
             ),
           )}
@@ -1174,6 +1249,14 @@ export default function NormalChatView({
           ↓ 回到底部
         </button>
       ) : null}
+      {subagentPane ? null : (
+        <SubagentDrawer
+          subagents={subagents}
+          open={drawerOpenState}
+          pinned={pinnedState}
+          onTogglePin={setPinnedState}
+        />
+      )}
     </div>
   );
 }

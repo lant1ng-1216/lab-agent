@@ -94,13 +94,15 @@ import {
 } from "./app/shell";
 import TitleBar from "./app/regions/TitleBar";
 import Sidebar from "./app/regions/Sidebar";
+import SubagentDrawer, { loadSubagentPin } from "./components/SubagentDrawer";
+import { mergeSubagentTraces } from "@shared/subagents";
 
 function initialLab(): AgentState {
   return { status: "idle", messages: [], streaming: null, mirror: [], approval: null, tools: [], timeline: [] };
 }
 
 function initialCoding(engine: string): AgentState {
-  return { status: "idle", messages: [], streaming: null, commands: [], mirror: [], tools: [], timeline: [], engine };
+  return { status: "idle", messages: [], streaming: null, commands: [], mirror: [], tools: [], subagents: [], timeline: [], engine };
 }
 
 const DISTILL_SESSION_PROMPT = `请把当前会话整理成一个可复用技能（skill）草稿。
@@ -221,6 +223,8 @@ export default function App() {
   const [inspectorW, setInspectorW] = useState(() => readNum(INSPECTOR_KEY, 400, INSPECTOR_MIN, INSPECTOR_MAX));
   const [filePreview, setFilePreview] = useState<FilePreviewPayload | null>(null);
   const [fileSideOpen, setFileSideOpen] = useState(false);
+  const [subagentOpen, setSubagentOpen] = useState(false);
+  const [subagentPinned, setSubagentPinned] = useState(loadSubagentPin);
   const [fileSideW, setFileSideW] = useState(() =>
     readNum(FILE_SIDE_KEY, FILE_SIDEBAR_DEFAULT_WIDTH, FILE_SIDE_MIN, FILE_SIDE_MAX),
   );
@@ -469,7 +473,8 @@ export default function App() {
   const onFilePreview = useCallback((preview: FilePreviewPayload) => {
     setFilePreview(preview);
     setFileSideOpen(true);
-    if (activeExp && preview.path) pushFileRecent(activeExp, preview.path);
+    // Auto-follow previews are transient: keep them out of the user's own history.
+    if (activeExp && preview.path && preview.origin !== "agent") pushFileRecent(activeExp, preview.path);
   }, [activeExp]);
   useEffect(() => { try { localStorage.setItem(SHELL_MODE_KEY, shellMode); } catch {} }, [shellMode]);
   useEffect(() => { try { localStorage.setItem(CHAT_MODEL_KEY, chatModel); } catch {} }, [chatModel]);
@@ -926,6 +931,7 @@ export default function App() {
           status: "thinking" as const,
           streaming: null,
           tools: [],
+          subagents: [],
           timeline: [],
           permission: null,
           thinkingText: undefined,
@@ -950,6 +956,7 @@ export default function App() {
           streaming: null,
           streamComplete: false,
           tools: [],
+          subagents: [],
           timeline: [],
           permission: null,
           thinkingText: undefined,
@@ -1071,6 +1078,7 @@ export default function App() {
         streaming: null,
         streamComplete: false,
         tools: [],
+        subagents: [],
         timeline: [],
         permission: null,
         thinkingText: undefined,
@@ -1491,6 +1499,11 @@ export default function App() {
                         setSkillsOpen(true);
                       }}
                       onPermissionAction={respondAgentPermission}
+                      subagentPane
+                      subagentOpen={subagentOpen}
+                      subagentPinned={subagentPinned}
+                      onSubagentOpenChange={setSubagentOpen}
+                      onSubagentPinChange={setSubagentPinned}
                     />
                   </div>
                   <div className="titlebar-no-drag relative z-[2] flex shrink-0 justify-center px-4 pb-4 pt-2">
@@ -1535,6 +1548,16 @@ export default function App() {
             onCollapse={() => setFileSideOpen(false)}
             onExpand={() => setFileSideOpen(true)}
             onPreview={onFilePreview}
+          />
+        ) : null}
+
+        {/* ============ Sub-agents (normal mode · live child-agent pane) ============ */}
+        {isNormal ? (
+          <SubagentDrawer
+            subagents={mergeSubagentTraces(turnToolTraces, coding.subagents ?? [])}
+            open={subagentOpen}
+            pinned={subagentPinned}
+            onTogglePin={setSubagentPinned}
           />
         ) : null}
 
