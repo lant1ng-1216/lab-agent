@@ -43,6 +43,106 @@ function relToWorkdir(workdir: string | null, abs: string) {
   return abs;
 }
 
+/**
+ * The engine reports absolute Windows paths with `\`, while the tree builds
+ * child paths with `/`. Normalise both sides so activity/touched lookups match.
+ * No-op on macOS/Linux.
+ */
+function normPath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** Live per-file activity derived from the current turn's tool traces. */
+type FileActivity = {
+  status: "created" | "modified" | "read";
+  add: number;
+  del: number;
+  state: AgentToolTrace["state"];
+};
+
+const ACTIVITY_RANK = { read: 1, modified: 2, created: 3 } as const;
+
+/**
+ * Classify a file tool by what it does to the file it reports: `write`
+ * creates, `edit` modifies, `null` means read-only (or not a file tool).
+ */
+function toolWriteKind(name: string | undefined): "write" | "edit" | null {
+  const n = (name || "").toLowerCase();
+  if (n.includes("write") || n.includes("createfile")) return "write";
+  if (n.includes("edit") || n.includes("replace")) return "edit";
+  return null;
+}
+
+function collectFileActivity(tools: AgentToolTrace[]): Map<string, FileActivity> {
+  const map = new Map<string, FileActivity>();
+  for (const t of tools) {
+    if (!t.file) continue;
+    const name = (t.name || "").toLowerCase();
+    const write = toolWriteKind(t.name);
+    const isRead = name.includes("read") || name.includes("view") || name.includes("glob") || name.includes("grep");
+    if (!write && !isRead) continue;
+    const next: FileActivity["status"] = write === "write" ? "created" : write === "edit" ? "modified" : "read";
+    const key = normPath(t.file);
+    const prev = map.get(key);
+    map.set(key, {
+      // Keep the strongest thing the agent did to this file this turn.
+      status: prev && ACTIVITY_RANK[prev.status] > ACTIVITY_RANK[next] ? prev.status : next,
+      add: (prev?.add ?? 0) + (t.add ?? 0),
+      del: (prev?.del ?? 0) + (t.del ?? 0),
+      state: t.state,
+    });
+  }
+  return map;
+}
+
+function activityLabel(act: FileActivity): string {  if (act.status === "read") return "读";
+  if (act.status === "created") return "新";
+  const parts: string[] = [];
+  if (act.add) parts.push(`+${act.add}`);
+  if (act.del) parts.push(`−${act.del}`);
+  return parts.join(" ") || "改";
+}
+
+function activityTone(act: FileActivity): string {
+  if (act.state === "error") return "border-[var(--lab-red)]/40 text-[var(--lab-red)]";
+  if (act.state === "running") return "border-[var(--lab-accent)]/40 text-[var(--lab-accent)] motion-safe:animate-pulse";
+  if (act.status === "read") return "border-[var(--lab-border)] text-[var(--lab-ink-3)]";
+  return "border-[var(--lab-green,#3ecf8e)]/40 text-[var(--lab-green,#3ecf8e)]";
+}
+
+/** Directories from `root` down to (and including) the parent of `abs`. */
+function ancestorDirs(root: string, abs: string): string[] {
+  const r = normPath(root);
+  const a = normPath(abs);
+  if (a !== r && !a.startsWith(r + "/")) return [];
+  const parts = a.slice(r.length).split("/").filter(Boolean);
+  parts.pop();
+  const out = [root];
+  let cur = root;
+  for (const p of parts) {
+    cur = joinPath(cur, p);
+    out.push(cur);
+  }
+  return out;
+}
+
+const FOLLOW_KEY = "lab.fileFollow";
+
+/**
+ * Collapse a burst of agent writes into a single preview open — long enough to
+ * skip over the intermediate files of a multi-file edit, short enough to feel
+ * live.
+ */
+const FOLLOW_PREVIEW_DELAY_MS = 180;
+
+function loadFollow(): boolean {
+  try {
+    return localStorage.getItem(FOLLOW_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 function CodeLines({ content }: { content: string }) {
   const lines = useMemo(() => {
     const raw = content.length > 120_000 ? `${content.slice(0, 120_000)}\n…` : content;
@@ -123,15 +223,20 @@ function DiffLines({ lines }: { lines: NonNullable<FilePreviewPayload["lines"]> 
 function WorkspaceTree({
   root,
   selected,
+  activity,
+  follow,
   onOpen,
 }: {
   root: string;
   selected: string | null;
+  activity: Map<string, FileActivity>;
+  follow: boolean;
   onOpen: (absPath: string) => void;
 }) {
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([root]));
   const [loading, setLoading] = useState(true);
+  const treeRef = useRef<HTMLDivElement | null>(null);
 
   const loadDir = useCallback(async (dir: string) => {
     const list = (await window.lab?.listFiles(dir)) ?? [];
@@ -155,6 +260,48 @@ function WorkspaceTree({
     if (!children[dir]) await loadDir(dir);
   };
 
+  // Follow the agent: when a touched file's parent dirs are not loaded yet,
+  // fetch them (once) so we can reveal + highlight the file in the tree.
+  const revealKey = useMemo(() => [...activity.keys()].sort().join("|"), [activity]);
+  useEffect(() => {
+    if (!follow || !revealKey) return;
+    const touched = revealKey.split("|").filter(Boolean);
+    let cancelled = false;
+    void (async () => {
+      const need = new Set<string>();
+      for (const file of touched) {
+        for (const dir of ancestorDirs(root, file)) {
+          if (dir !== root && children[dir] === undefined) need.add(dir);
+        }
+      }
+      if (!need.size) return;
+      const dirs = [...need];
+      const lists = await Promise.all(
+        dirs.map(async (dir) => [dir, (await window.lab?.listFiles(dir)) ?? []] as const),
+      );
+      if (cancelled) return;
+      setChildren((prev) => {
+        const next = { ...prev };
+        for (const [dir, list] of lists) if (next[dir] === undefined) next[dir] = list;
+        return next;
+      });
+      setExpanded((s) => new Set([...s, ...dirs]));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [follow, revealKey, root, children]);
+
+  // Scroll the most recently touched file into view.
+  const firstTouched = useMemo(() => {
+    for (const t of [...activity.entries()].reverse()) return t[0];
+    return null;
+  }, [activity]);
+  useEffect(() => {
+    if (!follow || !firstTouched) return;
+    const el = treeRef.current?.querySelector<HTMLElement>(`[data-file="${CSS.escape(firstTouched)}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [follow, firstTouched, children, expanded]);
   const renderDir = (dir: string, depth: number) => {
     const list = children[dir] ?? [];
     return list.map((f) => {
@@ -162,16 +309,20 @@ function WorkspaceTree({
       const isDir = f.type === "dir";
       const isOpen = expanded.has(abs);
       const active = !isDir && (selected === abs || selected?.endsWith("/" + f.name));
+      const act = !isDir ? activity.get(normPath(abs)) : undefined;
       return (
         <div key={abs}>
           <button
             type="button"
             title={abs}
+            data-file={!isDir ? normPath(abs) : undefined}
             onClick={() => (isDir ? void toggle(abs) : onOpen(abs))}
             className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[12px] ${
               active
                 ? "bg-[var(--lab-hover)] text-[var(--lab-ink)]"
-                : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+                : act
+                  ? "bg-[var(--lab-accent)]/[0.06] text-[var(--lab-ink)]"
+                  : "text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
             }`}
             style={{ paddingLeft: 8 + depth * 12 }}
           >
@@ -179,6 +330,14 @@ function WorkspaceTree({
               {isDir ? (isOpen ? "▾" : "▸") : "·"}
             </span>
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
+            {act ? (
+              <span
+                className={`shrink-0 rounded border px-1 py-px text-[9px] leading-none ${activityTone(act)}`}
+                title={act.status === "created" ? "本轮新建" : act.status === "modified" ? "本轮修改" : "本轮读取"}
+              >
+                {activityLabel(act)}
+              </span>
+            ) : null}
           </button>
           {isDir && isOpen ? renderDir(abs, depth + 1) : null}
         </div>
@@ -195,7 +354,7 @@ function WorkspaceTree({
     return <div className="px-3 py-3 text-[11.5px] text-[var(--lab-ink-3)]">空目录</div>;
   }
 
-  return <div className="py-1">{renderDir(root, 0)}</div>;
+  return <div className="py-1" ref={treeRef}>{renderDir(root, 0)}</div>;
 }
 
 function FileList({
@@ -266,7 +425,16 @@ export default function FileWorkspaceSidebar({
   const [browse, setBrowse] = useState<BrowseTab>("tree");
   const [viewTab, setViewTab] = useState<"file" | "diff">("file");
   const [recents, setRecents] = useState<string[]>([]);
+  const [follow, setFollow] = useState(loadFollow);
   const drag = useRef<{ startX: number; startW: number } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FOLLOW_KEY, follow ? "1" : "0");
+    } catch {
+      /* ignore quota / private-mode failures */
+    }
+  }, [follow]);
 
   useEffect(() => {
     setRecents(loadFileRecents(sessionKey));
@@ -315,6 +483,29 @@ export default function FileWorkspaceSidebar({
     return [...map.entries()].map(([path, badge]) => ({ path, badge }));
   }, [tools]);
 
+  const fileActivity = useMemo(() => collectFileActivity(tools), [tools]);
+
+  /**
+   * Newest *finished* write/edit this turn — what「跟随」should surface in the
+   * preview. Returns null while that newest write is still running, so we only
+   * ever read a file the agent has stopped touching (no half-written content).
+   */
+  const lastWritten = useMemo(() => {
+    for (let i = tools.length - 1; i >= 0; i -= 1) {
+      const t = tools[i];
+      if (!t.file || !toolWriteKind(t.name)) continue;
+      return t.state === "running" ? null : t;
+    }
+    return null;
+  }, [tools]);
+
+  const activeFileName = useMemo(() => {
+    for (const t of [...tools].reverse()) {
+      if (t.file && t.state === "running") return fileName(t.file);
+    }
+    return null;
+  }, [tools]);
+
   const turnBadges = useMemo(() => {
     const o: Record<string, string> = {};
     for (const { path, badge } of turnFiles) o[path] = badge;
@@ -338,15 +529,23 @@ export default function FileWorkspaceSidebar({
   }, [turnFiles, recents]);
 
   const openAbs = useCallback(
-    async (absPath: string, fromTool?: AgentToolTrace) => {
+    async (
+      absPath: string,
+      fromTool?: AgentToolTrace,
+      opts?: { record?: boolean; origin?: "user" | "agent" },
+    ) => {
+      const target = normPath(absPath);
+      const matches = (t: AgentToolTrace) => {
+        if (!t.file) return false;
+        const tf = normPath(t.file);
+        return tf === target || tf.endsWith(target) || target.endsWith(tf);
+      };
+      // Prefer the tool that actually wrote the file — it is the one carrying
+      // this turn's diff, whereas a Read/Glob of the same path carries none.
       const hit =
         fromTool ||
-        tools.find(
-          (t) =>
-            t.file === absPath ||
-            t.file?.endsWith(absPath) ||
-            absPath.endsWith(t.file || ""),
-        );
+        tools.find((t) => matches(t) && toolWriteKind(t.name)) ||
+        tools.find(matches);
 
       const lines =
         hit?.detailLines?.length && (hit.add !== undefined || hit.del !== undefined)
@@ -375,15 +574,54 @@ export default function FileWorkspaceSidebar({
         error: content === undefined ? error : undefined,
         lines,
         preferredTab: lines?.length ? "diff" : "file",
+        origin: opts?.origin ?? "user",
       });
       onExpand();
 
-      if (sessionKey) {
+      if (sessionKey && opts?.record !== false) {
         setRecents(pushFileRecent(sessionKey, hit?.file || absPath));
       }
     },
     [onExpand, onPreview, sessionKey, tools],
   );
+
+  /**
+   * Follow the agent's edits into the preview pane: when the agent finishes
+   * writing or editing a file, switch the preview to it so the change is
+   * visible without a click.
+   *
+   * Deliberately conservative — it only runs while the panel is already open
+   * (never force-expands the panel), and the short delay collapses a burst of
+   * writes into a single open of the newest file.
+   */
+  const openAbsRef = useRef(openAbs);
+  useEffect(() => {
+    openAbsRef.current = openAbs;
+  }, [openAbs]);
+
+  // Keep the newest write tool behind a ref so the effect below can depend on
+  // plain strings while still handing openAbs the exact tool that wrote the file.
+  const lastWrittenRef = useRef(lastWritten);
+  useEffect(() => {
+    lastWrittenRef.current = lastWritten;
+  }, [lastWritten]);
+
+  const followedRef = useRef<string | null>(null);
+  const lastWrittenId = lastWritten?.id ?? null;
+  const lastWrittenFile = lastWritten?.file ?? null;
+  useEffect(() => {
+    if (!follow || !open || !lastWrittenId || !lastWrittenFile) return;
+    if (followedRef.current === lastWrittenId) return;
+    const timer = window.setTimeout(() => {
+      followedRef.current = lastWrittenId;
+      const tool = lastWrittenRef.current;
+      void openAbsRef.current(lastWrittenFile, tool?.id === lastWrittenId ? tool : undefined, {
+        record: false,
+        origin: "agent",
+      });
+    }, FOLLOW_PREVIEW_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [follow, open, lastWrittenId, lastWrittenFile]);
 
   const hasDiff = Boolean(preview?.lines?.length);
   const hasFile = preview != null && (preview.content != null || preview.error);
@@ -455,11 +693,41 @@ export default function FileWorkspaceSidebar({
           ›
         </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-medium text-[var(--lab-ink)]">文件</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12.5px] font-medium text-[var(--lab-ink)]">文件</span>
+            {follow && activeFileName ? (
+              <span className="flex min-w-0 items-center gap-1 text-[10px] text-[var(--lab-accent)]" title={activeFileName}>
+                <span className="size-1.5 shrink-0 rounded-full bg-[var(--lab-accent)] motion-safe:animate-pulse" />
+                <span className="truncate font-[var(--lab-mono)]">{activeFileName}</span>
+              </span>
+            ) : null}
+          </div>
           <div className="truncate font-[var(--lab-mono)] text-[10px] text-[var(--lab-ink-3)]" title={workdir ?? undefined}>
             {workdir ? fileName(workdir) : "未绑定工作区"}
           </div>
         </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={follow}
+          aria-label={follow ? "关闭跟随 agent" : "开启跟随 agent"}
+          title={
+            follow
+              ? "跟随 agent：开 · 改动文件时自动定位并预览（面板折叠时不跟随）"
+              : "跟随 agent：关 · 不自动定位或预览"
+          }
+          onClick={() => setFollow((v) => !v)}
+          className={`flex size-6 shrink-0 items-center justify-center rounded-md border text-[11px] ${
+            follow
+              ? "border-[var(--lab-accent)]/40 bg-[var(--lab-accent)]/10 text-[var(--lab-accent)]"
+              : "border-[var(--lab-border-soft)] text-[var(--lab-ink-3)] hover:text-[var(--lab-ink)]"
+          }`}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" />
+          </svg>
+        </button>
         <div className="flex rounded-md border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] p-0.5 text-[11px]">
           {(
             [
@@ -490,7 +758,7 @@ export default function FileWorkspaceSidebar({
           {!workdir ? (
             <div className="px-3 py-4 text-[11.5px] text-[var(--lab-ink-3)]">先选择工作区，即可浏览文件。</div>
           ) : browse === "tree" ? (
-            <WorkspaceTree root={workdir} selected={preview?.path ?? null} onOpen={(p) => void openAbs(p)} />
+            <WorkspaceTree root={workdir} selected={preview?.path ?? null} activity={fileActivity} follow={follow} onOpen={(p) => void openAbs(p)} />
           ) : browse === "turn" ? (
             <FileList
               paths={turnFiles.map((t) => t.path)}
@@ -517,6 +785,14 @@ export default function FileWorkspaceSidebar({
         <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--lab-ink)]" title={preview?.path}>
           {preview ? fileName(preview.path) : "预览"}
         </div>
+        {preview?.origin === "agent" ? (
+          <span
+            className="shrink-0 rounded border border-[var(--lab-accent)]/40 bg-[var(--lab-accent)]/10 px-1.5 py-px text-[9.5px] leading-none text-[var(--lab-accent)]"
+            title="由跟随 agent 自动打开"
+          >
+            跟随
+          </span>
+        ) : null}
         {preview && hasFile && hasDiff ? (
           <div className="flex rounded-md border border-[var(--lab-border-soft)] bg-[var(--lab-inset)] p-0.5 text-[11px]">
             <button

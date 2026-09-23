@@ -7,6 +7,11 @@ export type FilePreviewPayload = {
   lines?: { text: string; tone?: "add" | "del" | "ctx" }[];
   /** Prefer opening on this tab when both exist */
   preferredTab?: "file" | "diff";
+  /**
+   * Who opened this preview. Agent auto-follow sets "agent" so the change is
+   * never recorded into the user's own「最近」history.
+   */
+  origin?: "user" | "agent";
 };
 
 type Props = {

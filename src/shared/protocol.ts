@@ -177,7 +177,138 @@ export const IPC = {
   AGENT_PERMISSION: 'lab:agent-permission',
   /** Report local API credential presence and non-secret runtime defaults. */
   GET_LAB_ENV: 'lab:get-lab-env',
+  /** Skills management (project + global skill directories) */
+  SKILLS_LIST: 'lab:skills-list',
+  SKILLS_READ: 'lab:skills-read',
+  SKILLS_WRITE: 'lab:skills-write',
+  SKILLS_DELETE: 'lab:skills-delete',
+  SKILLS_REVEAL: 'lab:skills-reveal',
+  /** Skills community marketplace (GitHub-hosted skill repos) */
+  SKILLS_MARKET_LIST: 'lab:skills-market-list',
+  SKILLS_MARKET_DESCRIBE: 'lab:skills-market-describe',
+  SKILLS_MARKET_PREVIEW: 'lab:skills-market-preview',
+  SKILLS_MARKET_INSTALL: 'lab:skills-market-install',
+  /** Custom agents management (project + global agent directories) */
+  AGENTS_LIST: 'lab:agents-list',
+  AGENTS_READ: 'lab:agents-read',
+  AGENTS_WRITE: 'lab:agents-write',
+  AGENTS_DELETE: 'lab:agents-delete',
+  AGENTS_REVEAL: 'lab:agents-reveal',
 } as const;
+
+export type SkillScope = 'project' | 'global';
+
+export interface SkillInfo {
+  scope: SkillScope;
+  /** Directory name — also the skill invocation name */
+  name: string;
+  /** Parsed from SKILL.md frontmatter ('' when missing) */
+  description: string;
+  dirPath: string;
+  /** Absolute path to SKILL.md (display / reveal only) */
+  filePath: string;
+  /** Directory contains files besides SKILL.md */
+  hasScripts: boolean;
+  mtimeMs: number;
+}
+
+export interface SkillsListResult {
+  ok: boolean;
+  skills: SkillInfo[];
+  error?: string;
+}
+
+export interface SkillReadRequest {
+  scope: SkillScope;
+  name: string;
+}
+
+export interface SkillReadResult {
+  ok: boolean;
+  content?: string;
+  filePath?: string;
+  error?: string;
+}
+
+export interface SkillWriteRequest {
+  scope: SkillScope;
+  name: string;
+  content: string;
+}
+
+export interface SkillWriteResult {
+  ok: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+export interface SkillDeleteRequest {
+  scope: SkillScope;
+  name: string;
+}
+
+export interface SkillRevealRequest {
+  scope: SkillScope;
+  name: string;
+}
+
+export type AgentScope = 'project' | 'global';
+
+export interface AgentInfo {
+  scope: AgentScope;
+  /** File name stem (without .md) */
+  name: string;
+  /** Frontmatter `name` — the agentType used for delegation ('' when missing/invalid) */
+  agentType: string;
+  /** Frontmatter `description` — drives when the engine delegates ('' when missing) */
+  description: string;
+  /** Frontmatter `model` ('' when unset → inherit) */
+  model: string;
+  /** Frontmatter `tools` list (empty → all tools) */
+  tools: string[];
+  filePath: string;
+  mtimeMs: number;
+}
+
+export interface AgentsListResult {
+  ok: boolean;
+  agents: AgentInfo[];
+  error?: string;
+}
+
+export interface AgentReadRequest {
+  scope: AgentScope;
+  name: string;
+}
+
+export interface AgentReadResult {
+  ok: boolean;
+  content?: string;
+  filePath?: string;
+  error?: string;
+}
+
+export interface AgentWriteRequest {
+  scope: AgentScope;
+  name: string;
+  content: string;
+}
+
+export interface AgentWriteResult {
+  ok: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+export interface AgentDeleteRequest {
+  scope: AgentScope;
+  name: string;
+}
+
+export interface AgentRevealRequest {
+  scope: AgentScope;
+  name: string;
+}
 
 export interface ListModelsRequest {
   baseUrl: string;
@@ -254,6 +385,22 @@ export type AgentBridgeEvent =
       detailLines?: { text: string; tone?: 'add' | 'del' | 'ctx' }[];
     }
   | {
+      kind: 'subagent';
+      /** Engine task id (stable across started/progress/notification). */
+      id: string;
+      /** Agent tool_use id — links the task back to the Agent tool call. */
+      toolUseId?: string;
+      description: string;
+      taskType?: string;
+      status: 'running' | 'completed' | 'failed' | 'stopped';
+      /** Most recent tool the sub-agent ran (task_progress). */
+      lastToolName?: string;
+      summary?: string;
+      toolUses?: number;
+      totalTokens?: number;
+      durationMs?: number;
+    }
+  | {
       kind: 'permission';
       requestId: string;
       toolName: string;
@@ -310,6 +457,24 @@ export interface AgentToolTrace {
   ts: number;
 }
 
+/** Live status of one sub-agent (Claude Code "Agent"/"Task" tool) run. */
+export interface SubagentTrace {
+  /** Engine task id. */
+  id: string;
+  /** Agent tool_use id (links back to the Agent tool call), when known. */
+  toolUseId?: string;
+  description: string;
+  taskType?: string;
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  lastToolName?: string;
+  summary?: string;
+  toolUses?: number;
+  totalTokens?: number;
+  durationMs?: number;
+  /** Local receive time — drives the live elapsed ticker while running. */
+  ts: number;
+}
+
 export interface AgentPermissionPrompt {
   requestId: string;
   toolName: string;
@@ -334,4 +499,77 @@ export interface AppSettings {
   workspacePath: string;
   /** OpenAI-compatible base for /models (derived from lab-agent.env) */
   apiBaseUrl?: string;
+}
+
+/** A GitHub-hosted skill repository exposed by the desktop marketplace. */
+export interface MarketSourceInfo {
+  id: string;
+  label: string;
+  /** `owner/repo` */
+  repo: string;
+  branch: string;
+  /** Repo-relative directory that holds `xxx/SKILL.md` entries ('' = repo root). */
+  skillsPath: string;
+  description: string;
+  homepage: string;
+  /** true when a skill dir may contain auxiliary files (scripts, reference.md…) */
+  supportsAssets: boolean;
+}
+
+/** One downloadable skill inside a marketplace source. */
+export interface MarketSkillInfo {
+  /** Stable identity: `<sourceId>/<relativeDir>` */
+  id: string;
+  sourceId: string;
+  /** Directory name — used as the install name after sanitizing. */
+  name: string;
+  /** Path relative to the repo root, POSIX separated (e.g. `skills/pdf`). */
+  path: string;
+  /** Frontmatter name (may differ from the directory name). */
+  declaredName?: string;
+  description: string;
+  /** Auxiliary entries inside the skill dir besides SKILL.md */
+  assetCount: number;
+  bytes: number;
+}
+
+export interface MarketListResult {
+  ok: boolean;
+  sources: MarketSourceInfo[];
+  skills: MarketSkillInfo[];
+  /** Per-source error text when listing that source failed. */
+  errors: Record<string, string>;
+}
+
+export interface MarketPreviewRequest {
+  id: string;
+}
+
+export interface MarketPreviewResult {
+  ok: boolean;
+  content?: string;
+  /** Relative paths of the auxiliary files bundled with this skill. */
+  assets?: string[];
+  error?: string;
+}
+
+export interface MarketInstallRequest {
+  id: string;
+  scope: SkillScope;
+  /** Override the install directory name (defaults to the sanitized dir name). */
+  name?: string;
+  /** Overwrite when a skill with the same name already exists. */
+  overwrite?: boolean;
+}
+
+export interface MarketInstallResult {
+  ok: boolean;
+  /** Installed skill name — surfaced for toasts and post-install selection. */
+  name?: string;
+  files?: string[];
+  /** true when an existing skill was replaced via overwrite. */
+  replaced?: boolean;
+  error?: string;
+  /** Set when install refused because the name already exists. */
+  conflict?: boolean;
 }

@@ -5,10 +5,12 @@ import type {
   ChatMessage,
   CodingMirrorEvent,
   LoopStatus,
+  SubagentTrace,
 } from "@shared/protocol";
 import type { AgentState } from "../canvas/CanvasFlow";
 import type { ThinkingRow } from "../harness/beautiful-ui/Thinking";
 import type { ToolDiff, ToolDiffLine, ToolStep } from "../harness/beautiful-ui/ToolChips";
+import { isSubagentTool } from "@shared/subagents";
 
 function newWorkSegment(phase: AgentWorkSegment["phase"]): AgentWorkSegment {
   return {
@@ -200,6 +202,26 @@ export function applyAgentEvent(state: AgentState, event: AgentBridgeEvent): Age
         mirror,
       };
     }
+    case "subagent": {
+      const list = state.subagents ?? [];
+      const idx = list.findIndex((s) => s.id === event.id);
+      const row: SubagentTrace = {
+        id: event.id,
+        toolUseId: event.toolUseId,
+        description: event.description,
+        taskType: event.taskType,
+        status: event.status,
+        lastToolName: event.lastToolName,
+        summary: event.summary,
+        toolUses: event.toolUses,
+        totalTokens: event.totalTokens,
+        durationMs: event.durationMs,
+        ts: idx >= 0 ? list[idx]!.ts : Date.now(),
+      };
+      const subagents =
+        idx >= 0 ? list.map((s) => (s.id === event.id ? row : s)) : [...list, row];
+      return { ...state, subagents };
+    }
     case "thinking_text": {
       const prev = state.thinkingText ?? "";
       const segmentUpdate = updateCurrentSegment(
@@ -354,7 +376,7 @@ export function commitStreamingReveal(state: AgentState): AgentState {
 }
 
 export function toolsToThinkingRows(tools: AgentToolTrace[]): ThinkingRow[] {
-  return tools.map((t) => {
+  return tools.filter((t) => !isSubagentTool(t.name)).map((t) => {
     const file = t.file ? t.file.replace(/^.*[/\\]/, "") : undefined;
     const failed = t.state === "error";
     return {
@@ -376,7 +398,7 @@ export function toolsToChips(tools: AgentToolTrace[]): {
   diffLines: Record<string, ToolDiffLine[]>;
   header: string;
 } {
-  const steps: ToolStep[] = tools.map((t) => {
+  const steps: ToolStep[] = tools.filter((t) => !isSubagentTool(t.name)).map((t) => {
     const icon = toolIcon(t.name);
     const base = t.file ? t.file.replace(/^.*[/\\]/, "") : "";
     const detail: ToolStep["detail"] =

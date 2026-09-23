@@ -7,8 +7,10 @@ import {
   FolderSimple,
   FolderSimplePlus,
   FunnelSimple,
+  Lightbulb,
   MagnifyingGlass,
   Plus,
+  Robot,
 } from "@phosphor-icons/react";
 import type { LoopStatus } from "@shared/protocol";
 import type { Experiment } from "../lib/sessionStores";
@@ -34,6 +36,9 @@ type Props = {
   onTogglePin: (id: string) => void;
   onToggleArchive: (id: string) => void;
   onSelectWorkspace: (dir: string) => void;
+  /** Secondary entries shown between 新对话 and 搜索. */
+  onOpenSkills: () => void;
+  onOpenAgents: () => void;
 };
 
 function activeStatus(e: Experiment, isNormal: boolean): LoopStatus {
@@ -97,6 +102,8 @@ export default function SidebarSessionList({
   onTogglePin,
   onToggleArchive,
   onSelectWorkspace,
+  onOpenSkills,
+  onOpenAgents,
 }: Props) {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -366,6 +373,22 @@ export default function SidebarSessionList({
         </button>
         <button
           type="button"
+          onClick={onOpenSkills}
+          className="flex size-8 items-center justify-center rounded-lg text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+          title="技能"
+        >
+          <Lightbulb size={16} {...I} />
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className="flex size-8 items-center justify-center rounded-lg text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
+          title="智能体管理"
+        >
+          <Robot size={16} {...I} />
+        </button>
+        <button
+          type="button"
           onClick={() => setSearchOpen(true)}
           className="flex size-8 items-center justify-center rounded-lg text-[var(--lab-ink-2)] hover:bg-[var(--lab-hover)] hover:text-[var(--lab-ink)]"
           title="搜索"
@@ -390,6 +413,26 @@ export default function SidebarSessionList({
             <Plus size={15} {...I} />
           </span>
           {isNormal ? "新对话" : "新实验"}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenSkills}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--lab-ink)] hover:bg-[var(--lab-hover)]"
+        >
+          <span className="flex size-4 items-center justify-center text-[var(--lab-ink-2)]">
+            <Lightbulb size={15} {...I} />
+          </span>
+          技能
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[12.5px] text-[var(--lab-ink)] hover:bg-[var(--lab-hover)]"
+        >
+          <span className="flex size-4 items-center justify-center text-[var(--lab-ink-2)]">
+            <Robot size={15} {...I} />
+          </span>
+          智能体
         </button>
         <button
           type="button"

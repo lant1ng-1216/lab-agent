@@ -34,15 +34,25 @@ function execFilePromise(
   args: string[],
 ): Promise<{ stdout: string; code: number | null }> {
   return new Promise(resolve => {
-    execFile(
-      cmd,
-      args,
-      { encoding: 'utf-8', timeout: MDM_SUBPROCESS_TIMEOUT_MS },
-      (err, stdout) => {
-        // biome-ignore lint/nursery/noFloatingPromises: resolve() is not a floating promise
-        resolve({ stdout: stdout ?? '', code: err ? 1 : 0 })
-      },
-    )
+    try {
+      execFile(
+        cmd,
+        args,
+        { encoding: 'utf-8', timeout: MDM_SUBPROCESS_TIMEOUT_MS },
+        (err, stdout) => {
+          // biome-ignore lint/nursery/noFloatingPromises: resolve() is not a floating promise
+          resolve({ stdout: stdout ?? '', code: err ? 1 : 0 })
+        },
+      )
+    } catch {
+      // `reg` / `plutil` can be missing or blocked outright (locked-down Windows,
+      // AppLocker/EDR policy, sandboxes). execFile throws *synchronously* in that
+      // case — rejecting this promise — and because the startup read is
+      // fire-and-forget, that rejection is unhandled and takes the whole CLI
+      // down. MDM is an optional policy overlay, so an unspawnable reader means
+      // "no policy configured", not a fatal error.
+      resolve({ stdout: '', code: null })
+    }
   })
 }
 
@@ -120,6 +130,11 @@ export function fireRawRead(): Promise<RawReadResult> {
 export function startMdmRawRead(): void {
   if (rawReadPromise) return
   rawReadPromise = fireRawRead()
+  // Fire-and-forget by design: nothing awaits this until well after startup, so a
+  // rejection here would be unhandled and take the process down before any
+  // consumer runs. The promise is still stored for later readers — this only
+  // stops a failed read from being fatal.
+  void rawReadPromise.catch(() => {})
 }
 
 /**

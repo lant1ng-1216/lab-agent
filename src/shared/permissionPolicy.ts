@@ -20,9 +20,20 @@ export function isWorkspaceEditTool(name: string): boolean {
   return SAFE_EDIT_TOOLS.test(n);
 }
 
+/** Skill files are never auto-allowed: saving a skill always needs user confirmation. */
+export function isSkillWriteTarget(file: string | undefined): boolean {
+  if (!file) return false;
+  const norm = file.replace(/\\/g, "/").toLowerCase();
+  const base = norm.split("/").pop() ?? "";
+  if (base === "skill.md") return true;
+  const idx = norm.lastIndexOf("/skills/");
+  return idx >= 0 && norm.slice(idx + "/skills/".length).length > 0;
+}
+
 /**
  * Under acceptEdits: auto-allow workspace read/write tools.
  * Under bypassPermissions: auto-allow everything except AskUserQuestion.
+ * Skill-file writes are always excluded from auto-allow (distillation gate).
  */
 export function shouldAutoAllowTool(
   mode: string | undefined,
@@ -31,6 +42,7 @@ export function shouldAutoAllowTool(
   cwd: string | undefined,
 ): boolean {
   if (isAskUserQuestionTool(toolName)) return false;
+  if (isWorkspaceEditTool(toolName) && isSkillWriteTarget(file)) return false;
   const m = mode || "default";
   if (m === "bypassPermissions") return true;
   if (m !== "acceptEdits") return false;

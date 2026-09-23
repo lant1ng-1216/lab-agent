@@ -8,7 +8,26 @@ import type {
   ListModelsRequest,
   ListModelsResult,
   LoopStatus,
+  SkillDeleteRequest,
+  SkillReadRequest,
+  SkillReadResult,
+  SkillRevealRequest,
+  SkillWriteRequest,
+  SkillWriteResult,
+  SkillsListResult,
+  AgentDeleteRequest,
+  AgentReadRequest,
+  AgentReadResult,
+  AgentRevealRequest,
+  AgentWriteRequest,
+  AgentWriteResult,
+  AgentsListResult,
   SupervisorCommand,
+  MarketListResult,
+  MarketPreviewRequest,
+  MarketPreviewResult,
+  MarketInstallRequest,
+  MarketInstallResult,
 } from "../../shared/protocol";
 
 declare module "*.png" {
@@ -62,6 +81,23 @@ declare global {
       pickFiles: (opts?: { defaultPath?: string; multi?: boolean }) => Promise<string[]>;
       listFiles: (dir: string) => Promise<{ name: string; type: string; size: number }[]>;
       readFile: (path: string) => Promise<{ ok: boolean; content?: string; error?: string }>;
+      skillsList: () => Promise<SkillsListResult>;
+      skillsRead: (payload: SkillReadRequest) => Promise<SkillReadResult>;
+      skillsWrite: (payload: SkillWriteRequest) => Promise<SkillWriteResult>;
+      skillsDelete: (payload: SkillDeleteRequest) => Promise<{ ok: boolean; error?: string }>;
+      skillsReveal: (payload: SkillRevealRequest) => Promise<{ ok: boolean; error?: string }>;
+      skillsMarketList: () => Promise<MarketListResult>;
+      skillsMarketDescribe: (ids: string[]) => Promise<{
+        ok: boolean;
+        metas: { id: string; description: string; declaredName: string }[];
+      }>;
+      skillsMarketPreview: (payload: MarketPreviewRequest) => Promise<MarketPreviewResult>;
+      skillsMarketInstall: (payload: MarketInstallRequest) => Promise<MarketInstallResult>;
+      agentsList: () => Promise<AgentsListResult>;
+      agentsRead: (payload: AgentReadRequest) => Promise<AgentReadResult>;
+      agentsWrite: (payload: AgentWriteRequest) => Promise<AgentWriteResult>;
+      agentsDelete: (payload: AgentDeleteRequest) => Promise<{ ok: boolean; error?: string }>;
+      agentsReveal: (payload: AgentRevealRequest) => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
